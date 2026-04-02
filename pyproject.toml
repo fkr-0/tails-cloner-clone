@@ -15,7 +15,6 @@ classifiers = [
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
   "License :: OSI Approved :: GNU General Public License v2 or later (GPLv2+)",
-  "Environment :: X11 Applications :: GTK",
   "Topic :: System :: Installation/Setup",
 ]
 
