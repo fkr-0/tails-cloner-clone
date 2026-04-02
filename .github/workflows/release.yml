@@ -1,0 +1,76 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run unit tests
+        run: |
+          PYTHONPATH=src python -m unittest discover -s tests -v
+
+      - name: Verify package entrypoint compiles
+        run: |
+          python -m compileall src
+          PYTHONPATH=src python -m tails_cloner --help
+
+  release-appimage:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: test
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install AppImage build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-tk curl libfuse2 patchelf
+
+      - name: Build AppImage
+        run: ./scripts/build_appimage.sh "${GITHUB_REF_NAME}"
+
+      - name: Assert release artifacts exist
+        run: |
+          ls -lah dist
+          test -x dist/*.AppImage
+          test -f dist/*.AppImage.sha256
+
+      - name: Upload AppImage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tails-cloner-appimage
+          path: |
+            dist/*.AppImage
+            dist/*.AppImage.sha256
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.AppImage
+            dist/*.AppImage.sha256
+          generate_release_notes: true

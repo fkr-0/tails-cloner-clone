@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Tails Cloner icon">
+  <rect width="128" height="128" rx="24" fill="#56347c"/>
+  <path d="M38 36h52c5.523 0 10 4.477 10 10v36c0 5.523-4.477 10-10 10H38c-5.523 0-10-4.477-10-10V46c0-5.523 4.477-10 10-10z" fill="#fff" opacity="0.92"/>
+  <path d="M48 48h32v8H48zm0 16h44v8H48zm0 16h28v8H48z" fill="#56347c"/>
+  <path d="M94 97l-11-11h7V72h8v14h7z" fill="#ffcc66"/>
+</svg>
