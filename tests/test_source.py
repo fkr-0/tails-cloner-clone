@@ -1,8 +1,7 @@
-import os
-import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from tails_cloner.source import (
     is_running_tails,
@@ -70,26 +69,31 @@ class RunningLiveSystemSourceTests(unittest.TestCase):
 
     def test_validate_succeeds_when_running_tails(self) -> None:
         """Source validation succeeds when running from Tails."""
-        with patch("tails_cloner.source.is_running_tails", return_value=True):
-            with patch("os.path.exists", return_value=True):
-                source = RunningLiveSystemSource()
+        with TemporaryDirectory() as tmpdir:
+            mount_point = Path(tmpdir)
+            with patch("tails_cloner.source.is_running_tails", return_value=True):
+                source = RunningLiveSystemSource(mount_point=mount_point)
                 source.validate()  # Should not raise
 
     def test_get_iso_path_when_present(self) -> None:
         """Return ISO path when it exists."""
-        with patch("tails_cloner.source.is_running_tails", return_value=True):
-            with patch("os.path.exists", return_value=True):
-                source = RunningLiveSystemSource()
-                iso_path = source.get_iso_path()
-                self.assertEqual(iso_path, Path("/lib/live/mount/medium/live/Tails.iso"))
+        with TemporaryDirectory() as tmpdir:
+            mount_point = Path(tmpdir)
+            (mount_point / "live").mkdir(parents=True)
+            expected_iso = mount_point / "live" / "Tails.iso"
+            expected_iso.touch()
+            source = RunningLiveSystemSource(mount_point=mount_point)
+            iso_path = source.get_iso_path()
+            self.assertEqual(iso_path, expected_iso)
 
     def test_get_iso_path_when_missing(self) -> None:
         """Return None when ISO doesn't exist."""
-        with patch("tails_cloner.source.is_running_tails", return_value=True):
-            with patch("os.path.exists", return_value=False):
-                source = RunningLiveSystemSource()
-                iso_path = source.get_iso_path()
-                self.assertIsNone(iso_path)
+        with TemporaryDirectory() as tmpdir:
+            mount_point = Path(tmpdir)
+            (mount_point / "live").mkdir(parents=True)
+            source = RunningLiveSystemSource(mount_point=mount_point)
+            iso_path = source.get_iso_path()
+            self.assertIsNone(iso_path)
 
 
 if __name__ == "__main__":
