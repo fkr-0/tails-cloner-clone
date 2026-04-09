@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 from tails_cloner.app import TailsClonerApp
 from tails_cloner.config import DEFAULT_REMOTE_INDEX_URL
@@ -17,12 +17,12 @@ class VersionService:
     def __init__(self, index: RemoteVersionIndex) -> None:
         self._index = index
 
-    def fetch_versions(self):
+    def fetch_versions(self) -> list:
         return self._index.fetch_versions()
 
 
 class CloneService:
-    def clone_image(self, image_path: str, device_path: str, progress_callback) -> None:
+    def clone_image(self, image_path: str, device_path: str, progress_callback: Callable[[str], None] | None = None) -> None:
         clone_image_to_device(image_path=image_path, device_path=device_path, progress_callback=progress_callback)
 
 

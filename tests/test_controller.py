@@ -58,9 +58,10 @@ class FakeCloneService:
     def __init__(self):
         self.calls = []
 
-    def clone_image(self, image_path: str, device_path: str, progress_callback):
+    def clone_image(self, image_path: str, device_path: str, progress_callback=None):
         self.calls.append((image_path, device_path))
-        progress_callback("done")
+        if progress_callback:
+            progress_callback("done")
 
 
 class ControllerTests(unittest.TestCase):
