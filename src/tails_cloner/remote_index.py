@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import ssl
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from typing import Any, Callable
@@ -60,7 +61,15 @@ def is_stable_version(version: str) -> bool:
 
 
 def fetch_text(url: str, timeout_seconds: int) -> str:
-    with urlopen(url, timeout=timeout_seconds) as response:  # noqa: S310 - remote catalog is user-configurable app input
+    ssl_context = ssl.create_default_context()
+    try:
+        import certifi
+
+        ssl_context.load_verify_locations(cafile=certifi.where())
+    except Exception:
+        # Fall back to platform trust store when certifi is unavailable.
+        pass
+    with urlopen(url, timeout=timeout_seconds, context=ssl_context) as response:  # noqa: S310 - remote catalog is user-configurable app input
         return response.read().decode("utf-8", errors="replace")
 
 

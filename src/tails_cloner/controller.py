@@ -169,5 +169,10 @@ class ApplicationController:
             if progress_callback:
                 progress_callback(message)
 
-        self.clone_service.clone_image(image_path=actual_image_path, device_path=device_path, progress_callback=on_progress)
+        self.clone_service.clone_image(
+            image_path=actual_image_path,
+            device_path=device_path,
+            progress_callback=on_progress,
+            post_write_options=self.state.post_write_options,
+        )
         self.state.status_message = "Clone completed successfully."

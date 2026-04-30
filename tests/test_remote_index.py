@@ -1,10 +1,12 @@
 import unittest
+from unittest.mock import patch
 
 from tails_cloner.remote_index import (
     RemoteIndexError,
     RemoteVersionIndex,
     apply_latest_release_metadata,
     build_version_assets,
+    fetch_text,
     parse_directory_listing,
     parse_gitlab_tags_document,
     parse_latest_release_document,
@@ -36,6 +38,24 @@ class FakeJsonFetcher:
 
 
 class RemoteIndexTests(unittest.TestCase):
+    def test_fetch_text_uses_ssl_context_for_https(self) -> None:
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self) -> bytes:
+                return b"ok"
+
+        with patch("tails_cloner.remote_index.urlopen", return_value=FakeResponse()) as mock_urlopen:
+            text = fetch_text("https://example.invalid/catalog", 7)
+
+        self.assertEqual(text, "ok")
+        self.assertEqual(mock_urlopen.call_count, 1)
+        self.assertIn("context", mock_urlopen.call_args.kwargs)
+
     def test_parse_directory_listing_extracts_and_sorts_versions(self) -> None:
         html = """
         <html>

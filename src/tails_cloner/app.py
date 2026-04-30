@@ -8,6 +8,7 @@ from tails_cloner.config import BRANDING, FONT_SIZE_LARGE, FONT_SIZE_MEDIUM, MIN
 from tails_cloner.controller import ApplicationController
 from tails_cloner.devices import MIN_INSTALLATION_SIZE_GB
 from tails_cloner.models import BlockDevice, SourceMode
+from tails_cloner.source import get_parent_disk_path
 
 
 class TailsClonerApp(tk.Tk):
@@ -34,6 +35,7 @@ class TailsClonerApp(tk.Tk):
         self.source_mode_var = tk.StringVar(value="local")
         self.running_tails_version_var = tk.StringVar()
         self.running_tails_device_var = tk.StringVar()
+        self.upgrade_plan_var = tk.StringVar(value="Source: not selected\nTarget: not selected\nAction: not selected")
         self._device_labels: dict[str, str] = {}
         self._last_versions_snapshot: tuple[str, ...] = ()
         self._last_devices_snapshot: tuple[str, ...] = ()
@@ -42,6 +44,7 @@ class TailsClonerApp(tk.Tk):
         self._versions_busy_text = ""
         self._devices_busy_text = ""
 
+        self._configure_theme()
         self._build_ui()
         self.controller.startup()
         self.after(REFRESH_INTERVAL_MS, self._sync_state)
@@ -68,8 +71,8 @@ class TailsClonerApp(tk.Tk):
             foreground="#555555",
         ).grid(row=1, column=0, sticky="w", pady=(4, 0))
         ttk.Label(header, textvariable=self.remote_url_var, foreground="#666666").grid(row=2, column=0, sticky="w", pady=(4, 0))
-        ttk.Button(header, text="Refresh &Versions (Ctrl+R)", command=lambda: self.controller.executor.submit(self.controller.refresh_versions)).grid(row=0, column=1, padx=(12, 0))
-        ttk.Button(header, text="Refresh &Devices (Ctrl+D)", command=lambda: self.controller.executor.submit(self.controller.refresh_devices)).grid(row=0, column=2, padx=(8, 0))
+        ttk.Button(header, text="Refresh Versions (Ctrl+R)", command=lambda: self.controller.executor.submit(self.controller.refresh_versions)).grid(row=0, column=1, padx=(12, 0))
+        ttk.Button(header, text="Refresh Devices (Ctrl+D)", command=lambda: self.controller.executor.submit(self.controller.refresh_devices)).grid(row=0, column=2, padx=(8, 0))
 
         # Source selection panel
         source_frame = ttk.LabelFrame(self, text="Source", padding=12)
@@ -83,7 +86,7 @@ class TailsClonerApp(tk.Tk):
 
         self.source_running_radio = ttk.Radiobutton(
             self.running_tails_frame,
-            text="&Clone the current Tails",
+            text="Clone the current Tails",
             value="running",
             variable=self.source_mode_var,
             command=self._on_source_mode_changed
@@ -93,6 +96,11 @@ class TailsClonerApp(tk.Tk):
         ttk.Label(self.running_tails_frame, textvariable=self.running_tails_version_var, foreground="#333333").grid(row=1, column=1, sticky="w")
         ttk.Label(self.running_tails_frame, text="Device:", foreground="#666666").grid(row=2, column=0, sticky="w", padx=(20, 4))
         ttk.Label(self.running_tails_frame, textvariable=self.running_tails_device_var, foreground="#333333").grid(row=2, column=1, sticky="w")
+        ttk.Label(
+            self.running_tails_frame,
+            text="Boot newer Tails from USB, then upgrade another target device.",
+            foreground="#555555",
+        ).grid(row=3, column=0, columnspan=2, sticky="w", padx=(20, 0), pady=(4, 0))
 
         # Local file source option
         self.source_local_frame = ttk.Frame(source_frame)
@@ -100,7 +108,7 @@ class TailsClonerApp(tk.Tk):
         self.source_local_frame.columnconfigure(0, weight=1)
         self.source_local_radio = ttk.Radiobutton(
             self.source_local_frame,
-            text="&Use a downloaded Tails ISO/IMG image",
+            text="Use a downloaded Tails ISO/IMG image",
             value="local",
             variable=self.source_mode_var,
             command=self._on_source_mode_changed
@@ -141,7 +149,7 @@ class TailsClonerApp(tk.Tk):
         ttk.Label(right, text="Local image file").grid(row=0, column=0, sticky="w")
         self.image_entry = ttk.Entry(right, textvariable=self.image_path_var)
         self.image_entry.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 0))
-        ttk.Button(right, text="&Browse…", command=self._browse_image).grid(row=1, column=2, padx=(8, 0))
+        ttk.Button(right, text="Browse...", command=self._browse_image).grid(row=1, column=2, padx=(8, 0))
 
         ttk.Label(right, text="Target device").grid(row=2, column=0, sticky="w", pady=(16, 0))
         self.device_combo = ttk.Combobox(right, textvariable=self.device_var, state="readonly")
@@ -154,17 +162,26 @@ class TailsClonerApp(tk.Tk):
         self.device_warning_label = ttk.Label(right, text="", foreground="#a63636", wraplength=320)
         self.device_warning_label.grid(row=5, column=0, columnspan=3, sticky="w", pady=(4, 0))
 
+        self.upgrade_plan_label = ttk.Label(
+            right,
+            textvariable=self.upgrade_plan_var,
+            foreground="#1f4d8f",
+            wraplength=320,
+            justify="left",
+        )
+        self.upgrade_plan_label.grid(row=6, column=0, columnspan=3, sticky="w", pady=(8, 0))
+
         # Progress bar for clone operation
         self.progress_frame = ttk.Frame(right)
-        self.progress_frame.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(12, 0))
+        self.progress_frame.grid(row=7, column=0, columnspan=3, sticky="ew", pady=(12, 0))
         self.progress_bar = ttk.Progressbar(self.progress_frame, mode="indeterminate")
         self.progress_bar.grid(row=0, column=0, sticky="ew")
         self.progress_label = ttk.Label(self.progress_frame, text="", foreground="#666666")
         self.progress_label.grid(row=1, column=0, sticky="w", pady=(4, 0))
         self.progress_frame.grid_remove()  # Hidden by default
 
-        self.clone_button = ttk.Button(right, text="&Install", command=self._confirm_and_clone)
-        self.clone_button.grid(row=7, column=0, columnspan=3, sticky="ew", pady=(20, 0))
+        self.clone_button = ttk.Button(right, text="Install", command=self._confirm_and_clone)
+        self.clone_button.grid(row=8, column=0, columnspan=3, sticky="ew", pady=(20, 0))
         # Make clone button the default (activated by Enter)
         self.clone_button.bind("<Return>", lambda e: self._confirm_and_clone())
         warning_text = (
@@ -172,7 +189,7 @@ class TailsClonerApp(tk.Tk):
             "Treat it like a loaded weapon and verify the target path every time.\n\n"
             "All data on the target device will be permanently lost."
         )
-        ttk.Label(right, text=warning_text, wraplength=340, justify="left", foreground="#7a1f1f").grid(row=8, column=0, columnspan=3, sticky="w", pady=(12, 0))
+        ttk.Label(right, text=warning_text, wraplength=340, justify="left", foreground="#7a1f1f").grid(row=9, column=0, columnspan=3, sticky="w", pady=(12, 0))
 
         ttk.Label(self, textvariable=self.status_var, relief="sunken", anchor="w", padding=(12, 8)).grid(
             row=3,
@@ -185,6 +202,26 @@ class TailsClonerApp(tk.Tk):
 
         # Set initial focus to device combo for quick access
         self.device_combo.focus_set()
+
+    def _configure_theme(self) -> None:
+        style = ttk.Style(self)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+
+        self.configure(bg="#f0f0f0")
+        style.configure("TLabel", background="#f0f0f0", foreground="#111111")
+        style.configure("TFrame", background="#f0f0f0")
+        style.configure("TLabelframe", background="#f0f0f0")
+        style.configure("TLabelframe.Label", background="#f0f0f0", foreground="#111111")
+        style.configure("TRadiobutton", background="#f0f0f0", foreground="#111111")
+        style.configure("TButton", padding=(10, 6))
+
+        self.option_add("*Listbox.Background", "#ffffff")
+        self.option_add("*Listbox.Foreground", "#111111")
+        self.option_add("*Listbox.SelectBackground", "#2f6db5")
+        self.option_add("*Listbox.SelectForeground", "#ffffff")
 
     def _add_readonly_row(self, parent: ttk.Frame, row: int, label: str, variable: tk.StringVar) -> None:
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="nw", pady=(0, 6), padx=(0, 8))
@@ -265,6 +302,9 @@ class TailsClonerApp(tk.Tk):
             title = "Confirm upgrade"
             message = (
                 f"Upgrade {device_path} from {source_desc}?\n\n"
+                f"Source: {source_desc}\n"
+                f"Target: {device_path} (existing Tails installation detected; installed version not detected)\n"
+                f"Action: Upgrade preserving Persistent Storage\n\n"
                 f"This will upgrade the existing Tails installation while preserving the Persistent Storage."
             )
         elif button_text == "Reinstall (delete all data)":
@@ -324,6 +364,7 @@ class TailsClonerApp(tk.Tk):
         self._sync_devices()
         self._sync_selected_version_fields()
         self._sync_loading_labels()
+        self._sync_upgrade_plan()
         self.after(REFRESH_INTERVAL_MS, self._sync_state)
 
     def _sync_source_mode(self) -> None:
@@ -374,11 +415,11 @@ class TailsClonerApp(tk.Tk):
         devices = self.controller.state.devices
 
         if self.controller.state.source_mode == SourceMode.RUNNING and running_device:
-            # Exclude the running device and its partitions
+            running_parent = get_parent_disk_path(running_device)
+            # Exclude the running source disk and all partitions on that disk.
             devices = [
                 d for d in devices
-                if d.path != running_device
-                and not d.path.startswith(running_device.rstrip("0123456789") + "p")
+                if get_parent_disk_path(d.path) != running_parent
             ]
 
         labels = {device.pretty_name: device.path for device in devices}
@@ -463,6 +504,27 @@ class TailsClonerApp(tk.Tk):
         device_label = "Scanning removable devices…" if self.controller.state.devices_loading else "Device scan idle"
         self.version_status_label.config(text=version_label)
         self.device_status_label.config(text=device_label)
+
+    def _sync_upgrade_plan(self) -> None:
+        selected_name = self.device_var.get().strip()
+        target_device = self._device_labels.get(selected_name, selected_name) if selected_name else "not selected"
+
+        if self.controller.state.source_mode == SourceMode.RUNNING:
+            running_version = self.controller.state.running_tails_version or "unknown"
+            source_desc = f"running Tails {running_version} (live medium)"
+        else:
+            image_path = self.image_path_var.get().strip()
+            source_desc = Path(image_path).name if image_path else "local ISO/IMG not selected"
+
+        action = self.clone_button.cget("text")
+        if action == "Upgrade":
+            action_desc = "Upgrade preserving Persistent Storage"
+        elif action == "Reinstall (delete all data)":
+            action_desc = "Reinstall (deletes all data)"
+        else:
+            action_desc = "Install (deletes all data)"
+
+        self.upgrade_plan_var.set(f"Source: {source_desc}\nTarget: {target_device}\nAction: {action_desc}")
 
     def _on_close(self) -> None:
         self.controller.shutdown()

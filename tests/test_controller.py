@@ -1,4 +1,3 @@
-import threading
 import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -58,8 +57,14 @@ class FakeCloneService:
     def __init__(self):
         self.calls = []
 
-    def clone_image(self, image_path: str, device_path: str, progress_callback=None):
-        self.calls.append((image_path, device_path))
+    def clone_image(
+        self,
+        image_path: str,
+        device_path: str,
+        progress_callback=None,
+        post_write_options=None,
+    ):
+        self.calls.append((image_path, device_path, post_write_options))
         if progress_callback:
             progress_callback("done")
 
@@ -116,7 +121,10 @@ class ControllerTests(unittest.TestCase):
 
         controller.clone_selected_image("/tmp/tails.iso", "/dev/sdb")
 
-        self.assertEqual(clone_service.calls, [("/tmp/tails.iso", "/dev/sdb")])
+        self.assertEqual(len(clone_service.calls), 1)
+        self.assertEqual(clone_service.calls[0][0], "/tmp/tails.iso")
+        self.assertEqual(clone_service.calls[0][1], "/dev/sdb")
+        self.assertIsNotNone(clone_service.calls[0][2])
         self.assertEqual(controller.state.status_message, "Clone completed successfully.")
         self.assertEqual(controller.state.last_clone_progress, "done")
 

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import subprocess
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from pathlib import Path
-from typing import TextIO
 
+from tails_cloner.models import PostWriteOptions
+from tails_cloner.post_write import apply_post_write_options
 from tails_cloner.source import LocalImageSource
 
 RunCloneCommand = Callable[[list[str], Callable[[str], None]], int]
@@ -53,6 +54,8 @@ def clone_image_to_device(
     device_path: str,
     run_command: RunCloneCommand = run_clone_command,
     progress_callback: Callable[[str], None] | None = None,
+    post_write_options: PostWriteOptions | None = None,
+    post_write_runner: Callable[[str, PostWriteOptions, Callable[[str], None] | None], None] = apply_post_write_options,
 ) -> None:
     image = LocalImageSource(Path(image_path))
     image.validate()
@@ -60,3 +63,6 @@ def clone_image_to_device(
     exit_code = run_command(build_clone_command(image.path, device_path), callback)
     if exit_code != 0:
         raise RuntimeError(f"Clone process exited with status {exit_code}")
+
+    options = post_write_options or PostWriteOptions()
+    post_write_runner(device_path, options, callback)

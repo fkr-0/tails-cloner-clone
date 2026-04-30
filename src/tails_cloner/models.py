@@ -6,9 +6,10 @@ from enum import Enum
 
 class SourceMode(Enum):
     """Source mode for cloning."""
+
     RUNNING = "running"  # Clone from running Tails system
-    LOCAL = "local"      # Use local ISO/IMG file
-    REMOTE = "remote"    # Download remote version
+    LOCAL = "local"  # Use local ISO/IMG file
+    REMOTE = "remote"  # Download remote version
 
 
 @dataclass(slots=True)
@@ -19,6 +20,14 @@ class VersionAssets:
     img_url: str
     sig_url: str
     sha256_url: str
+
+
+@dataclass(slots=True)
+class PostWriteOptions:
+    enabled: bool = False
+    sync_device: bool = True
+    settle_seconds: float = 2.0
+    log_file_path: str = ""
 
 
 @dataclass(slots=True)
@@ -54,6 +63,7 @@ class BlockDevice:
 class AppState:
     available_versions: list[VersionAssets] = field(default_factory=list)
     devices: list[BlockDevice] = field(default_factory=list)
+    post_write_options: PostWriteOptions = field(default_factory=PostWriteOptions)
     status_message: str = "Ready."
     selected_version: str = ""
     selected_iso_url: str = ""

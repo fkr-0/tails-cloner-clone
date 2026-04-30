@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -12,6 +13,22 @@ class SourceType(Enum):
     RUNNING_TAILS = "running_tails"
     LOCAL_IMAGE = "local_image"
     REMOTE_IMAGE = "remote_image"
+
+
+def get_parent_disk_path(device_path: str) -> str:
+    """Return the parent disk path for a device or partition path."""
+    if not device_path.startswith("/dev/"):
+        return device_path
+
+    nvme_like = re.fullmatch(r"(/dev/(?:nvme\d+n\d+|mmcblk\d+|loop\d+|md\d+))p\d+", device_path)
+    if nvme_like:
+        return nvme_like.group(1)
+
+    standard = re.fullmatch(r"(/dev/[a-zA-Z]+)\d+", device_path)
+    if standard:
+        return standard.group(1)
+
+    return device_path
 
 
 def is_running_tails() -> bool:

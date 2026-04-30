@@ -8,6 +8,7 @@ from tails_cloner.source import (
     get_running_tails_version,
     get_running_tails_device,
     get_running_tails_size_bytes,
+    get_parent_disk_path,
     RunningLiveSystemSource,
 )
 
@@ -57,6 +58,20 @@ class RunningTailsVersionTests(unittest.TestCase):
         """Return None when version file doesn't exist."""
         with patch("os.path.exists", return_value=False):
             self.assertIsNone(get_running_tails_version())
+
+
+class ParentDiskPathTests(unittest.TestCase):
+    def test_get_parent_disk_for_standard_partition(self) -> None:
+        self.assertEqual(get_parent_disk_path("/dev/sdb1"), "/dev/sdb")
+
+    def test_get_parent_disk_for_nvme_partition(self) -> None:
+        self.assertEqual(get_parent_disk_path("/dev/nvme0n1p2"), "/dev/nvme0n1")
+
+    def test_get_parent_disk_for_loop_partition(self) -> None:
+        self.assertEqual(get_parent_disk_path("/dev/loop0p1"), "/dev/loop0")
+
+    def test_get_parent_disk_returns_input_for_disk(self) -> None:
+        self.assertEqual(get_parent_disk_path("/dev/sdb"), "/dev/sdb")
 
 
 class RunningLiveSystemSourceTests(unittest.TestCase):
