@@ -18,7 +18,7 @@ class TailsClonerApp(tk.Tk):
         super().__init__(className="tails-cloner-clone")
         self.controller = controller
         self.remote_index_url = remote_index_url
-        self.wm_class("tails-cloner-clone", "tails-cloner-clone")
+        self._set_window_class()
         self.title(BRANDING.window_title)
         self.geometry(WINDOW_SIZE)
         self.minsize(*MIN_WINDOW_SIZE)
@@ -285,6 +285,13 @@ class TailsClonerApp(tk.Tk):
     def _on_toggle_dark_mode(self) -> None:
         self.dark_mode_var.set(not self.dark_mode_var.get())
         self._apply_theme(self.dark_mode_var.get())
+
+    def _set_window_class(self) -> None:
+        try:
+            self.tk.call("wm", "class", self._w, "tails-cloner-clone")
+        except tk.TclError:
+            # Some Tk builds may not expose wm class control consistently.
+            pass
 
     def _asset_path(self, name: str) -> Path:
         if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):

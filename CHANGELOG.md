@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.3.3 - 2026-05-03
+
+- Fixed AppImage startup regression caused by unsupported `wm_class` method usage in some Tk builds.
+- Switched WM class assignment to a Tcl-level `wm class` call with safe fallback handling.
+- Added regression tests for window class assignment success and TclError fallback behavior.
+
 ## v0.3.2 - 2026-05-03
 
 - Reworked source selection UX to clearly separate remote download, running live system clone, and local image file flows.
