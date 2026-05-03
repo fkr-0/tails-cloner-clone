@@ -1,4 +1,4 @@
-# Tails Cloner Clone
+# ![Tails Cloner Clone icon](assets/tails-cloner-clone-32.png) Tails Cloner Clone
 
 A refreshed standalone Python desktop app for writing Tails images to removable devices.
 

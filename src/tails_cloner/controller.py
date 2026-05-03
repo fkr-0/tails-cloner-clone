@@ -110,13 +110,13 @@ class ApplicationController:
     def refresh_devices(self) -> None:
         """Scan for available block devices."""
         self.state.devices_loading = True
-        self.state.status_message = "Scanning removable devices…"
+        self.state.status_message = "Scanning devices…"
         try:
             self.state.devices = self.device_service.list_removable_devices()
             if self.state.devices:
-                self.state.status_message = f"Found {len(self.state.devices)} removable device(s)."
+                self.state.status_message = f"Found {len(self.state.devices)} device(s)."
             else:
-                self.state.status_message = "No removable devices detected."
+                self.state.status_message = "No devices detected."
         except Exception as error:  # noqa: BLE001 - surfaced in UI state
             self.state.status_message = f"Device scan failed: {error}"
         finally:

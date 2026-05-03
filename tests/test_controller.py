@@ -128,6 +128,20 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(controller.state.status_message, "Clone completed successfully.")
         self.assertEqual(controller.state.last_clone_progress, "done")
 
+    def test_refresh_devices_uses_generic_device_wording(self) -> None:
+        controller = ApplicationController(
+            state=AppState(),
+            version_service=FakeVersionService(),
+            device_service=FakeDeviceService(),
+            clone_service=FakeCloneService(),
+            executor=ThreadPoolExecutor(max_workers=1),
+        )
+        self.addCleanup(controller.shutdown)
+
+        controller.refresh_devices()
+
+        self.assertEqual(controller.state.status_message, "Found 1 device(s).")
+
 
 if __name__ == "__main__":
     unittest.main()

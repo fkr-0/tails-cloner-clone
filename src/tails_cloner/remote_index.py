@@ -6,6 +6,7 @@ import ssl
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from typing import Any, Callable
+from urllib.error import URLError
 from urllib.parse import urljoin
 from urllib.request import urlopen
 
@@ -72,11 +73,26 @@ def fetch_text(url: str, timeout_seconds: int) -> str:
     try:
         with urlopen(url, timeout=timeout_seconds, context=ssl_context) as response:  # noqa: S310 - remote catalog is user-configurable app input
             return response.read().decode("utf-8", errors="replace")
-    except ssl.SSLCertVerificationError:
+    except Exception as error:
+        if not _is_cert_verification_error(error):
+            raise
         # Some AppImage environments ship without a complete trust store.
         insecure_context = ssl._create_unverified_context()  # noqa: SLF001
         with urlopen(url, timeout=timeout_seconds, context=insecure_context) as response:  # noqa: S310 - remote catalog is user-configurable app input
             return response.read().decode("utf-8", errors="replace")
+
+
+def _is_cert_verification_error(error: Exception) -> bool:
+    if isinstance(error, ssl.SSLCertVerificationError):
+        return True
+    if isinstance(error, URLError):
+        reason = getattr(error, "reason", None)
+        if isinstance(reason, ssl.SSLCertVerificationError):
+            return True
+        if isinstance(reason, str) and "CERTIFICATE_VERIFY_FAILED" in reason:
+            return True
+    message = str(error)
+    return "CERTIFICATE_VERIFY_FAILED" in message
 
 
 

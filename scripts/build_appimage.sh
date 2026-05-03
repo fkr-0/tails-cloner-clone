@@ -11,6 +11,9 @@ APPIMAGE_NAME="tails-cloner-clone-${VERSION}-x86_64.AppImage"
 
 rm -rf "$BUILD_DIR" "$DIST_DIR/tails-cloner-clone" "$DIST_DIR"/*.AppImage
 mkdir -p "$BUILD_DIR" "$DIST_DIR" "$APPDIR/usr/lib" "$APPDIR/usr/share/icons/hicolor/scalable/apps"
+for size in 16 24 32 48 64 128 256 512; do
+  mkdir -p "$APPDIR/usr/share/icons/hicolor/${size}x${size}/apps"
+done
 
 python3 -m pip install --upgrade pip
 python3 -m pip install pyinstaller
@@ -33,12 +36,17 @@ Name=Tails Cloner Clone
 Comment=Refreshed standalone GUI app for cloning Tails images onto removable devices
 Exec=tails-cloner-clone
 Icon=tails-cloner-clone
+StartupWMClass=tails-cloner-clone
 Categories=Utility;System;
 Terminal=false
 EOF
 
 cp "$ROOT_DIR/assets/tails-cloner-clone.svg" "$APPDIR/tails-cloner-clone.svg"
 cp "$ROOT_DIR/assets/tails-cloner-clone.svg" "$APPDIR/usr/share/icons/hicolor/scalable/apps/tails-cloner-clone.svg"
+cp "$ROOT_DIR/assets/tails-cloner-clone-256.png" "$APPDIR/.DirIcon"
+for size in 16 24 32 48 64 128 256 512; do
+  cp "$ROOT_DIR/assets/tails-cloner-clone-${size}.png" "$APPDIR/usr/share/icons/hicolor/${size}x${size}/apps/tails-cloner-clone.png"
+done
 
 curl -fsSL -o "$APPIMAGE_TOOL" https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
 chmod +x "$APPIMAGE_TOOL"

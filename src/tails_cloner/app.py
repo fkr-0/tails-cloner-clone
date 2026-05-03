@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import tkinter as tk
+import sys
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
+from urllib.request import urlopen
 
 from tails_cloner.config import BRANDING, FONT_SIZE_LARGE, FONT_SIZE_MEDIUM, MIN_WINDOW_SIZE, REFRESH_INTERVAL_MS, WINDOW_SIZE
 from tails_cloner.controller import ApplicationController
@@ -13,9 +15,10 @@ from tails_cloner.source import get_parent_disk_path
 
 class TailsClonerApp(tk.Tk):
     def __init__(self, controller: ApplicationController, remote_index_url: str) -> None:
-        super().__init__()
+        super().__init__(className="tails-cloner-clone")
         self.controller = controller
         self.remote_index_url = remote_index_url
+        self.wm_class("tails-cloner-clone", "tails-cloner-clone")
         self.title(BRANDING.window_title)
         self.geometry(WINDOW_SIZE)
         self.minsize(*MIN_WINDOW_SIZE)
@@ -30,6 +33,7 @@ class TailsClonerApp(tk.Tk):
         self.selected_image_url_var = tk.StringVar()
         self.selected_signature_url_var = tk.StringVar()
         self.image_path_var = tk.StringVar()
+        self.source_status_var = tk.StringVar(value="")
         self.device_var = tk.StringVar()
         # Source mode variables
         self.source_mode_var = tk.StringVar(value="local")
@@ -45,6 +49,7 @@ class TailsClonerApp(tk.Tk):
         self._devices_busy_text = ""
         self.dark_mode_var = tk.BooleanVar(value=True)
 
+        self._set_window_icon()
         self._configure_theme()
         self._build_ui()
         self.controller.startup()
@@ -72,20 +77,45 @@ class TailsClonerApp(tk.Tk):
             foreground="#555555",
         ).grid(row=1, column=0, sticky="w", pady=(4, 0))
         ttk.Label(header, textvariable=self.remote_url_var, foreground="#666666").grid(row=2, column=0, sticky="w", pady=(4, 0))
-        ttk.Checkbutton(header, text="Dark mode", variable=self.dark_mode_var, command=self._on_toggle_dark_mode).grid(
-            row=1, column=1, sticky="e", padx=(12, 0)
-        )
         ttk.Button(header, text="Refresh Versions (Ctrl+R)", command=lambda: self.controller.executor.submit(self.controller.refresh_versions)).grid(row=0, column=1, padx=(12, 0))
         ttk.Button(header, text="Refresh Devices (Ctrl+D)", command=lambda: self.controller.executor.submit(self.controller.refresh_devices)).grid(row=0, column=2, padx=(8, 0))
+        self.theme_button = ttk.Button(header, text="🌙", width=3, command=self._on_toggle_dark_mode)
+        self.theme_button.grid(row=0, column=3, padx=(8, 0))
+        ttk.Button(header, text="✕", width=3, command=self._on_close).grid(row=0, column=4, padx=(8, 0))
 
         # Source selection panel
         source_frame = ttk.LabelFrame(self, text="Source", padding=12)
         source_frame.grid(row=1, column=0, sticky="nsew", padx=(16, 8), pady=(0, 8))
         source_frame.columnconfigure(0, weight=1)
 
+        # Remote source option
+        self.source_remote_frame = ttk.Frame(source_frame)
+        self.source_remote_frame.grid(row=0, column=0, sticky="ew")
+        self.source_remote_frame.columnconfigure(0, weight=1)
+        self.source_remote_radio = ttk.Radiobutton(
+            self.source_remote_frame,
+            text="Use a remote Tails version (download first)",
+            value="remote",
+            variable=self.source_mode_var,
+            command=self._on_source_mode_changed,
+        )
+        self.source_remote_radio.grid(row=0, column=0, sticky="w")
+        self.download_button = ttk.Button(
+            self.source_remote_frame,
+            text="Download selected IMG to local cache",
+            command=lambda: self.controller.executor.submit(self._download_selected_remote_image),
+        )
+        self.download_button.grid(row=1, column=0, sticky="w", padx=(20, 0), pady=(4, 0))
+        ttk.Label(
+            self.source_remote_frame,
+            textvariable=self.source_status_var,
+            foreground="#666666",
+            wraplength=520,
+        ).grid(row=2, column=0, sticky="w", padx=(20, 0), pady=(2, 0))
+
         # Running Tails source option
         self.running_tails_frame = ttk.Frame(source_frame)
-        self.running_tails_frame.grid(row=0, column=0, sticky="ew")
+        self.running_tails_frame.grid(row=1, column=0, sticky="ew", pady=(10, 0))
         self.running_tails_frame.columnconfigure(1, weight=1)
 
         self.source_running_radio = ttk.Radiobutton(
@@ -108,16 +138,20 @@ class TailsClonerApp(tk.Tk):
 
         # Local file source option
         self.source_local_frame = ttk.Frame(source_frame)
-        self.source_local_frame.grid(row=1, column=0, sticky="ew", pady=(12, 0))
-        self.source_local_frame.columnconfigure(0, weight=1)
+        self.source_local_frame.grid(row=2, column=0, sticky="ew", pady=(10, 0))
+        self.source_local_frame.columnconfigure(1, weight=1)
         self.source_local_radio = ttk.Radiobutton(
             self.source_local_frame,
-            text="Use a downloaded Tails ISO/IMG image",
+            text="Use a local image file",
             value="local",
             variable=self.source_mode_var,
             command=self._on_source_mode_changed
         )
-        self.source_local_radio.grid(row=0, column=0, sticky="w")
+        self.source_local_radio.grid(row=0, column=0, columnspan=3, sticky="w")
+        self.image_entry = ttk.Entry(self.source_local_frame, textvariable=self.image_path_var)
+        self.image_entry.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 0), padx=(20, 0))
+        self.browse_button = ttk.Button(self.source_local_frame, text="Browse...", command=self._browse_image)
+        self.browse_button.grid(row=1, column=2, padx=(8, 0), pady=(4, 0))
 
         # Remote versions panel (hidden when using running Tails or local file)
         left = ttk.LabelFrame(self, text="Remote versions", padding=12)
@@ -150,21 +184,16 @@ class TailsClonerApp(tk.Tk):
         right.grid(row=2, column=1, sticky="nsew", padx=(8, 16), pady=(0, 8))
         right.columnconfigure(1, weight=1)
 
-        ttk.Label(right, text="Local image file").grid(row=0, column=0, sticky="w")
-        self.image_entry = ttk.Entry(right, textvariable=self.image_path_var)
-        self.image_entry.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 0))
-        ttk.Button(right, text="Browse...", command=self._browse_image).grid(row=1, column=2, padx=(8, 0))
-
-        ttk.Label(right, text="Target device").grid(row=2, column=0, sticky="w", pady=(16, 0))
+        ttk.Label(right, text="Target device").grid(row=0, column=0, sticky="w")
         self.device_combo = ttk.Combobox(right, textvariable=self.device_var, state="readonly")
-        self.device_combo.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(4, 0))
+        self.device_combo.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(4, 0))
         self.device_combo.bind("<<ComboboxSelected>>", self._on_device_selected)
 
         self.device_status_label = ttk.Label(right, text="Idle", foreground="#666666", wraplength=320)
-        self.device_status_label.grid(row=4, column=0, columnspan=3, sticky="w", pady=(12, 0))
+        self.device_status_label.grid(row=2, column=0, columnspan=3, sticky="w", pady=(12, 0))
 
         self.device_warning_label = ttk.Label(right, text="", foreground="#a63636", wraplength=320)
-        self.device_warning_label.grid(row=5, column=0, columnspan=3, sticky="w", pady=(4, 0))
+        self.device_warning_label.grid(row=3, column=0, columnspan=3, sticky="w", pady=(4, 0))
 
         self.upgrade_plan_label = ttk.Label(
             right,
@@ -173,11 +202,11 @@ class TailsClonerApp(tk.Tk):
             wraplength=320,
             justify="left",
         )
-        self.upgrade_plan_label.grid(row=6, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        self.upgrade_plan_label.grid(row=4, column=0, columnspan=3, sticky="w", pady=(8, 0))
 
         # Progress bar for clone operation
         self.progress_frame = ttk.Frame(right)
-        self.progress_frame.grid(row=7, column=0, columnspan=3, sticky="ew", pady=(12, 0))
+        self.progress_frame.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(12, 0))
         self.progress_bar = ttk.Progressbar(self.progress_frame, mode="indeterminate")
         self.progress_bar.grid(row=0, column=0, sticky="ew")
         self.progress_label = ttk.Label(self.progress_frame, text="", foreground="#666666")
@@ -185,7 +214,7 @@ class TailsClonerApp(tk.Tk):
         self.progress_frame.grid_remove()  # Hidden by default
 
         self.clone_button = ttk.Button(right, text="Install", command=self._confirm_and_clone)
-        self.clone_button.grid(row=8, column=0, columnspan=3, sticky="ew", pady=(20, 0))
+        self.clone_button.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(20, 0))
         # Make clone button the default (activated by Enter)
         self.clone_button.bind("<Return>", lambda e: self._confirm_and_clone())
         warning_text = (
@@ -193,7 +222,7 @@ class TailsClonerApp(tk.Tk):
             "Treat it like a loaded weapon and verify the target path every time.\n\n"
             "All data on the target device will be permanently lost."
         )
-        ttk.Label(right, text=warning_text, wraplength=340, justify="left", foreground="#7a1f1f").grid(row=9, column=0, columnspan=3, sticky="w", pady=(12, 0))
+        ttk.Label(right, text=warning_text, wraplength=340, justify="left", foreground="#7a1f1f").grid(row=7, column=0, columnspan=3, sticky="w", pady=(12, 0))
 
         ttk.Label(self, textvariable=self.status_var, relief="sunken", anchor="w", padding=(12, 8)).grid(
             row=3,
@@ -223,12 +252,14 @@ class TailsClonerApp(tk.Tk):
             entry_bg = "#262b31"
             listbox_bg = "#252a31"
             select_bg = "#3b6ea8"
+            active_bg = "#242a31"
         else:
             bg = "#f0f0f0"
             fg = "#111111"
             entry_bg = "#ffffff"
             listbox_bg = "#ffffff"
             select_bg = "#2f6db5"
+            active_bg = "#e3e8ee"
 
         self.configure(bg=bg)
         style.configure("TLabel", background=bg, foreground=fg)
@@ -236,10 +267,11 @@ class TailsClonerApp(tk.Tk):
         style.configure("TLabelframe", background=bg, foreground=fg)
         style.configure("TLabelframe.Label", background=bg, foreground=fg)
         style.configure("TRadiobutton", background=bg, foreground=fg)
-        style.configure("TCheckbutton", background=bg, foreground=fg)
         style.configure("TButton", padding=(10, 6))
         style.configure("TEntry", fieldbackground=entry_bg)
         style.configure("TCombobox", fieldbackground=entry_bg)
+        style.map("TRadiobutton", background=[("active", bg)], foreground=[("active", fg)])
+        style.map("TButton", background=[("active", active_bg)])
 
         self.option_add("*Listbox.Background", listbox_bg)
         self.option_add("*Listbox.Foreground", fg)
@@ -247,9 +279,34 @@ class TailsClonerApp(tk.Tk):
         self.option_add("*Listbox.SelectForeground", "#ffffff")
         if hasattr(self, "versions_list"):
             self.versions_list.configure(bg=listbox_bg, fg=fg, selectbackground=select_bg, selectforeground="#ffffff")
+        if hasattr(self, "theme_button"):
+            self.theme_button.config(text="☀" if dark_mode else "🌙")
 
     def _on_toggle_dark_mode(self) -> None:
+        self.dark_mode_var.set(not self.dark_mode_var.get())
         self._apply_theme(self.dark_mode_var.get())
+
+    def _asset_path(self, name: str) -> Path:
+        if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+            return Path(getattr(sys, "_MEIPASS")) / "assets" / name
+        return Path(__file__).resolve().parents[2] / "assets" / name
+
+    def _set_window_icon(self) -> None:
+        icon_candidates = [
+            self._asset_path("tails-cloner-clone-64.png"),
+            self._asset_path("tails-cloner-clone-48.png"),
+            self._asset_path("tails-cloner-clone.png"),
+        ]
+        for icon_path in icon_candidates:
+            if not icon_path.exists():
+                continue
+            try:
+                icon_image = tk.PhotoImage(file=str(icon_path))
+                self.iconphoto(True, icon_image)
+                self._icon_image_ref = icon_image
+                return
+            except tk.TclError:
+                continue
 
     def _add_readonly_row(self, parent: ttk.Frame, row: int, label: str, variable: tk.StringVar) -> None:
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="nw", pady=(0, 6), padx=(0, 8))
@@ -289,7 +346,38 @@ class TailsClonerApp(tk.Tk):
             self.controller.set_source_mode(SourceMode.RUNNING)
         elif mode_str == "local":
             self.controller.set_source_mode(SourceMode.LOCAL)
-        # Note: REMOTE mode is not fully implemented yet, would need download handling
+        elif mode_str == "remote":
+            self.controller.set_source_mode(SourceMode.REMOTE)
+
+    def _download_selected_remote_image(self) -> None:
+        img_url = self.controller.state.selected_image_url.strip()
+        if not img_url:
+            self.controller.state.status_message = "No remote IMG URL selected."
+            return
+
+        cache_dir = Path.home() / ".cache" / "tails-cloner-clone" / "downloads"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        filename = Path(img_url).name or f"tails-{self.controller.state.selected_version}.img"
+        target_path = cache_dir / filename
+
+        self.source_status_var.set(f"Downloading {filename}…")
+        self.controller.state.status_message = f"Downloading {filename}…"
+        try:
+            with urlopen(img_url, timeout=60) as response:  # noqa: S310 - user-selected remote source
+                with target_path.open("wb") as out:
+                    while True:
+                        chunk = response.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        out.write(chunk)
+            self.image_path_var.set(str(target_path))
+            self.controller.set_source_mode(SourceMode.LOCAL)
+            self.source_mode_var.set("local")
+            self.source_status_var.set(f"Downloaded to {target_path}")
+            self.controller.state.status_message = f"Downloaded {filename}. Using local file source."
+        except Exception as error:  # noqa: BLE001 - visible UI feedback
+            self.source_status_var.set(f"Download failed: {error}")
+            self.controller.state.status_message = f"Download failed: {error}"
 
     def _on_device_selected(self, _event=None) -> None:
         self._update_device_warnings_and_button()
@@ -303,7 +391,10 @@ class TailsClonerApp(tk.Tk):
         if self.controller.state.source_mode != SourceMode.RUNNING:
             image_path = self.image_path_var.get().strip()
             if not image_path:
-                messagebox.showerror("Missing image", "Choose a local ISO or IMG file before cloning.")
+                if self.controller.state.source_mode == SourceMode.REMOTE:
+                    messagebox.showerror("Missing image", "Download the selected remote IMG first, then clone the local file.")
+                else:
+                    messagebox.showerror("Missing image", "Choose a local ISO or IMG file before cloning.")
                 return
 
         if not device_path:
@@ -407,18 +498,25 @@ class TailsClonerApp(tk.Tk):
             self.source_mode_var.set("running")
             # Show running Tails frame, enable radio button
             self.source_running_radio.state(["!disabled"])
-            self.running_tails_frame.grid()
         else:
             self.source_running_radio.state(["disabled"])
-            self.running_tails_frame.grid_remove()
-
-        # Always show local file option
         if current_mode == SourceMode.LOCAL:
             self.source_mode_var.set("local")
-        self.source_local_frame.grid()
+        elif current_mode == SourceMode.REMOTE:
+            self.source_mode_var.set("remote")
 
-        # Show/hide local image file entry based on source mode
-        # (This would require keeping references to those widgets, for now leave them visible)
+        if current_mode == SourceMode.LOCAL:
+            self.image_entry.state(["!disabled"])
+            self.browse_button.state(["!disabled"])
+            self.download_button.state(["disabled"])
+        elif current_mode == SourceMode.REMOTE:
+            self.image_entry.state(["disabled"])
+            self.browse_button.state(["disabled"])
+            self.download_button.state(["!disabled"])
+        else:
+            self.image_entry.state(["disabled"])
+            self.browse_button.state(["disabled"])
+            self.download_button.state(["disabled"])
 
     def _sync_versions(self) -> None:
         snapshot = tuple(entry.version for entry in self.controller.state.available_versions)
@@ -529,7 +627,7 @@ class TailsClonerApp(tk.Tk):
 
     def _sync_loading_labels(self) -> None:
         version_label = "Refreshing remote versions…" if self.controller.state.versions_loading else "Remote versions idle"
-        device_label = "Scanning removable devices…" if self.controller.state.devices_loading else "Device scan idle"
+        device_label = "Scanning devices…" if self.controller.state.devices_loading else "Device scan idle"
         self.version_status_label.config(text=version_label)
         self.device_status_label.config(text=device_label)
 
@@ -540,6 +638,8 @@ class TailsClonerApp(tk.Tk):
         if self.controller.state.source_mode == SourceMode.RUNNING:
             running_version = self.controller.state.running_tails_version or "unknown"
             source_desc = f"running Tails {running_version} (live medium)"
+        elif self.controller.state.source_mode == SourceMode.REMOTE:
+            source_desc = f"remote {self.controller.state.selected_version or 'version'} (download required)"
         else:
             image_path = self.image_path_var.get().strip()
             source_desc = Path(image_path).name if image_path else "local ISO/IMG not selected"
