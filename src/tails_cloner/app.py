@@ -43,6 +43,7 @@ class TailsClonerApp(tk.Tk):
         self._last_status: str = ""
         self._versions_busy_text = ""
         self._devices_busy_text = ""
+        self.dark_mode_var = tk.BooleanVar(value=True)
 
         self._configure_theme()
         self._build_ui()
@@ -71,6 +72,9 @@ class TailsClonerApp(tk.Tk):
             foreground="#555555",
         ).grid(row=1, column=0, sticky="w", pady=(4, 0))
         ttk.Label(header, textvariable=self.remote_url_var, foreground="#666666").grid(row=2, column=0, sticky="w", pady=(4, 0))
+        ttk.Checkbutton(header, text="Dark mode", variable=self.dark_mode_var, command=self._on_toggle_dark_mode).grid(
+            row=1, column=1, sticky="e", padx=(12, 0)
+        )
         ttk.Button(header, text="Refresh Versions (Ctrl+R)", command=lambda: self.controller.executor.submit(self.controller.refresh_versions)).grid(row=0, column=1, padx=(12, 0))
         ttk.Button(header, text="Refresh Devices (Ctrl+D)", command=lambda: self.controller.executor.submit(self.controller.refresh_devices)).grid(row=0, column=2, padx=(8, 0))
 
@@ -204,24 +208,48 @@ class TailsClonerApp(tk.Tk):
         self.device_combo.focus_set()
 
     def _configure_theme(self) -> None:
+        self._apply_theme(self.dark_mode_var.get())
+
+    def _apply_theme(self, dark_mode: bool) -> None:
         style = ttk.Style(self)
         try:
             style.theme_use("clam")
         except tk.TclError:
             pass
 
-        self.configure(bg="#f0f0f0")
-        style.configure("TLabel", background="#f0f0f0", foreground="#111111")
-        style.configure("TFrame", background="#f0f0f0")
-        style.configure("TLabelframe", background="#f0f0f0")
-        style.configure("TLabelframe.Label", background="#f0f0f0", foreground="#111111")
-        style.configure("TRadiobutton", background="#f0f0f0", foreground="#111111")
-        style.configure("TButton", padding=(10, 6))
+        if dark_mode:
+            bg = "#1a1d21"
+            fg = "#e8eaed"
+            entry_bg = "#262b31"
+            listbox_bg = "#252a31"
+            select_bg = "#3b6ea8"
+        else:
+            bg = "#f0f0f0"
+            fg = "#111111"
+            entry_bg = "#ffffff"
+            listbox_bg = "#ffffff"
+            select_bg = "#2f6db5"
 
-        self.option_add("*Listbox.Background", "#ffffff")
-        self.option_add("*Listbox.Foreground", "#111111")
-        self.option_add("*Listbox.SelectBackground", "#2f6db5")
+        self.configure(bg=bg)
+        style.configure("TLabel", background=bg, foreground=fg)
+        style.configure("TFrame", background=bg)
+        style.configure("TLabelframe", background=bg, foreground=fg)
+        style.configure("TLabelframe.Label", background=bg, foreground=fg)
+        style.configure("TRadiobutton", background=bg, foreground=fg)
+        style.configure("TCheckbutton", background=bg, foreground=fg)
+        style.configure("TButton", padding=(10, 6))
+        style.configure("TEntry", fieldbackground=entry_bg)
+        style.configure("TCombobox", fieldbackground=entry_bg)
+
+        self.option_add("*Listbox.Background", listbox_bg)
+        self.option_add("*Listbox.Foreground", fg)
+        self.option_add("*Listbox.SelectBackground", select_bg)
         self.option_add("*Listbox.SelectForeground", "#ffffff")
+        if hasattr(self, "versions_list"):
+            self.versions_list.configure(bg=listbox_bg, fg=fg, selectbackground=select_bg, selectforeground="#ffffff")
+
+    def _on_toggle_dark_mode(self) -> None:
+        self._apply_theme(self.dark_mode_var.get())
 
     def _add_readonly_row(self, parent: ttk.Frame, row: int, label: str, variable: tk.StringVar) -> None:
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="nw", pady=(0, 6), padx=(0, 8))

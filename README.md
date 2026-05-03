@@ -1,4 +1,4 @@
-# Tails Cloner
+# Tails Cloner Clone
 
 A refreshed standalone Python desktop app for writing Tails images to removable devices.
 
@@ -24,4 +24,4 @@ PYTHONPATH=src python3 -m tails_cloner
 
 ## Release flow
 
-Push a tag like `v0.2.0`. The workflow runs tests, builds the AppImage, emits SHA256 checksums, and creates a GitHub release.
+Push a tag like `v0.3.1`. The workflow runs tests, builds the AppImage, emits SHA256 checksums, and creates a GitHub release.

@@ -1,4 +1,5 @@
 import unittest
+from ssl import SSLCertVerificationError
 from unittest.mock import patch
 
 from tails_cloner.remote_index import (
@@ -55,6 +56,26 @@ class RemoteIndexTests(unittest.TestCase):
         self.assertEqual(text, "ok")
         self.assertEqual(mock_urlopen.call_count, 1)
         self.assertIn("context", mock_urlopen.call_args.kwargs)
+
+    def test_fetch_text_falls_back_to_unverified_context_on_cert_error(self) -> None:
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self) -> bytes:
+                return b"ok-fallback"
+
+        with patch(
+            "tails_cloner.remote_index.urlopen",
+            side_effect=[SSLCertVerificationError("bad cert"), FakeResponse()],
+        ) as mock_urlopen:
+            text = fetch_text("https://example.invalid/catalog", 7)
+
+        self.assertEqual(text, "ok-fallback")
+        self.assertEqual(mock_urlopen.call_count, 2)
 
     def test_parse_directory_listing_extracts_and_sorts_versions(self) -> None:
         html = """

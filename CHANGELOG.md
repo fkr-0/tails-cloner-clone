@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.3.1 - 2026-05-03
+
+- Defaulted the UI to dark mode and added a dark-mode toggle in the header.
+- Added SSL-certificate verification fallback for remote version refresh in restricted CA environments.
+- Renamed project/build/release naming consistently to `tails-cloner-clone`.
+
 ## v0.2.1 - 2026-04-30
 
 - Fixed AppImage UI text artifacts where `&` mnemonic markers were shown literally in labels and buttons.

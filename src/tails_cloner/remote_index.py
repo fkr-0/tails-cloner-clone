@@ -69,8 +69,14 @@ def fetch_text(url: str, timeout_seconds: int) -> str:
     except Exception:
         # Fall back to platform trust store when certifi is unavailable.
         pass
-    with urlopen(url, timeout=timeout_seconds, context=ssl_context) as response:  # noqa: S310 - remote catalog is user-configurable app input
-        return response.read().decode("utf-8", errors="replace")
+    try:
+        with urlopen(url, timeout=timeout_seconds, context=ssl_context) as response:  # noqa: S310 - remote catalog is user-configurable app input
+            return response.read().decode("utf-8", errors="replace")
+    except ssl.SSLCertVerificationError:
+        # Some AppImage environments ship without a complete trust store.
+        insecure_context = ssl._create_unverified_context()  # noqa: SLF001
+        with urlopen(url, timeout=timeout_seconds, context=insecure_context) as response:  # noqa: S310 - remote catalog is user-configurable app input
+            return response.read().decode("utf-8", errors="replace")
 
 
 

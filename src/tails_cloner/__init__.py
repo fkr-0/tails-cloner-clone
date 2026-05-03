@@ -1,4 +1,4 @@
-"""Tails Cloner - A standalone GUI application for cloning Tails images.
+"""Tails Cloner Clone - A standalone GUI application for cloning Tails images.
 
 This package provides a refreshed desktop application for installing and
 upgrading Tails to USB devices. It supports cloning from the running Tails
@@ -14,9 +14,9 @@ Key features:
 Example usage:
     python -m tails_cloner
     # or
-    tails-cloner --remote-index-url https://download.tails.net/tails/stable/
+    tails-cloner-clone --remote-index-url https://download.tails.net/tails/stable/
 """
 
 __all__ = ["__version__"]
 
-__version__ = "0.2.1"
+__version__ = "0.3.1"
