@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.4.1 - 2026-05-03
+
+- Introduced a tabbed UI workflow:
+  - `Source` tab focused on source selection, source details, remote list, and remote metadata/checksum fields.
+  - `Write` tab focused on target device actions with install/update mode selection and an experimental panel stub.
+- Added source details panel that adapts to `remote`, `running`, and `local` source modes.
+- Added remote source provenance block with URL and last refresh timestamp.
+- Added editable suggested checksum field and automatic local file SHA256 computation for selected local images.
+- Added remote download state and suggested local path tracking in UI.
+- Added install/update mode selector; update mode filters device list to Tails-installed targets.
+- Updated app header:
+  - title now `Tails Cloner Clone` with icon next to headline.
+  - subtitle replaced with clickable `https://downloads.tails.net` reference and hover highlight behavior.
+- Improved dark-mode readability for entry/combobox/read-only field text and button hover foreground handling.
+- Ensured theme toggle icon is initialized correctly at startup (`☀` for dark mode, `🌙` for light mode).
+- Standardized WM class intent to `tails-cloner-clone` with robust Tk-compatible assignment path.
+- Enhanced icon styling with stronger rainbow accents and regenerated PNG icon assets from SVG.
+
 ## v0.3.3 - 2026-05-03
 
 - Fixed AppImage startup regression caused by unsupported `wm_class` method usage in some Tk builds.
