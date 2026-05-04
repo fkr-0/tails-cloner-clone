@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import json
 import subprocess
-from collections.abc import Sequence
 
+from tails_cloner.drive_inspector import has_tails_installation
 from tails_cloner.models import BlockDevice
-
 
 LSBLK_COLUMNS = "PATH,SIZE,MODEL,VENDOR,RM,HOTPLUG,TRAN,TYPE,RO,FSTYPE,LABEL,PARTTYPE,PTTYPE"
 MIN_INSTALLATION_SIZE_GB = 8
@@ -15,31 +14,6 @@ MIN_UPGRADE_SIZE_GB = 16
 def format_bytes_as_gib(size_bytes: int) -> str:
     gib = size_bytes / (1024**3)
     return f"{gib:.1f} GiB"
-
-
-def device_has_tails(device_info: dict, partitions: list) -> bool:
-    """Check if a device has Tails installed.
-
-    Following the legacy installer logic:
-    - Not isohybrid (not iso9660 filesystem)
-    - Is GPT partition table
-    - vfat filesystem on partition
-    - Label is "Tails"
-    """
-    # Check if the device itself is isohybrid (ISO image)
-    if device_info.get("fstype") == "iso9660":
-        return False
-
-    # Check for GPT partition table
-    if device_info.get("pttype") != "gpt":
-        return False
-
-    # Check partitions for Tails filesystem
-    for part in partitions:
-        if part.get("fstype") == "vfat" and part.get("label") == "Tails":
-            return True
-
-    return False
 
 
 def parse_lsblk_json(payload: dict) -> list[BlockDevice]:
@@ -58,7 +32,7 @@ def parse_lsblk_json(payload: dict) -> list[BlockDevice]:
             partitions = [child for child in item["children"] if child.get("type") == "part"]
 
         # Detect Tails installation
-        has_tails = device_has_tails(item, partitions)
+        has_tails = has_tails_installation(item, partitions)
 
         # Get filesystem info from first partition if available
         fstype = ""

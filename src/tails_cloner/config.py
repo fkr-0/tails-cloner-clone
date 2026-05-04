@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-DEFAULT_REMOTE_INDEX_URL = "https://download.tails.net/tails/stable/"
+DEFAULT_REMOTE_INDEX_URL = "https://iso-history.tails.boum.org/"
 DEFAULT_TAILS_LATEST_RELEASE_URL = "https://tails.net/install/v2/Tails/amd64/stable/latest.json"
 DEFAULT_TAILS_TAGS_API_URL = "https://gitlab.tails.boum.org/api/v4/projects/tails%2Ftails/repository/tags?per_page=100"
 WINDOW_TITLE = "Tails Cloner Clone"

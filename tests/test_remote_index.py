@@ -1,7 +1,7 @@
 import unittest
 from ssl import SSLCertVerificationError
-from urllib.error import URLError
 from unittest.mock import patch
+from urllib.error import URLError
 
 from tails_cloner.remote_index import (
     RemoteIndexError,
@@ -101,10 +101,10 @@ class RemoteIndexTests(unittest.TestCase):
     def test_parse_directory_listing_extracts_and_sorts_versions(self) -> None:
         html = """
         <html>
-          <a href="6.12/">6.12/</a>
-          <a href="6.11/">6.11/</a>
+          <a href="tails-amd64-6.12/">tails-amd64-6.12/</a>
+          <a href="tails-amd64-6.11/">tails-amd64-6.11/</a>
           <a href="latest/">latest/</a>
-          <a href="6.9/">6.9/</a>
+          <a href="tails-amd64-6.9/">tails-amd64-6.9/</a>
         </html>
         """
 
@@ -151,7 +151,7 @@ class RemoteIndexTests(unittest.TestCase):
         self.assertEqual(assets.img_url, "https://meta.invalid/7.6.1.img")
         self.assertEqual(
             assets.sig_url,
-            "https://download.example/stable/7.6.1/tails-amd64-7.6.1.iso.sig",
+            "https://download.example/stable/tails-amd64-7.6.1/tails-amd64-7.6.1.iso.sig",
         )
 
     def test_fetch_versions_merges_latest_tags_and_directory_listing(self) -> None:
@@ -168,7 +168,9 @@ class RemoteIndexTests(unittest.TestCase):
                 tags_api_url: [{"name": "7.6"}, {"name": "7.5.1"}, {"name": "7.7-rc1"}],
             }
         )
-        text_fetcher = FakeTextFetcher({base_url: '<a href="7.5/">7.5/</a><a href="7.6/">7.6/</a>'})
+        text_fetcher = FakeTextFetcher(
+            {base_url: '<a href="tails-amd64-7.5/">7.5/</a><a href="tails-amd64-7.6/">7.6/</a>'}
+        )
         index = RemoteVersionIndex(
             base_url=base_url,
             latest_release_url=latest_release_url,
@@ -187,7 +189,7 @@ class RemoteIndexTests(unittest.TestCase):
     def test_fetch_versions_falls_back_to_directory_listing_when_json_sources_fail(self) -> None:
         base_url = "https://download.example/stable/"
 
-        def failing_json_fetcher(url: str, timeout_seconds: int) -> object:
+        def failing_json_fetcher(url: str, _timeout_seconds: int) -> object:
             raise RuntimeError(f"boom from {url}")
 
         text_fetcher = FakeTextFetcher({base_url: '<a href="6.12/">6.12/</a>'})
@@ -204,16 +206,16 @@ class RemoteIndexTests(unittest.TestCase):
         self.assertEqual([entry.version for entry in entries], ["6.12"])
         self.assertEqual(
             entries[0].iso_url,
-            "https://download.example/stable/6.12/tails-amd64-6.12.iso",
+            "https://download.example/stable/tails-amd64-6.12/tails-amd64-6.12.iso",
         )
 
     def test_fetch_versions_raises_when_all_sources_fail(self) -> None:
         base_url = "https://download.example/stable/"
 
-        def failing_json_fetcher(url: str, timeout_seconds: int) -> object:
+        def failing_json_fetcher(_url: str, _timeout_seconds: int) -> object:
             raise RuntimeError("json unavailable")
 
-        def failing_text_fetcher(url: str, timeout_seconds: int) -> str:
+        def failing_text_fetcher(_url: str, _timeout_seconds: int) -> str:
             raise RuntimeError("html unavailable")
 
         index = RemoteVersionIndex(
@@ -230,11 +232,17 @@ class RemoteIndexTests(unittest.TestCase):
     def test_build_version_assets_constructs_expected_urls(self) -> None:
         assets = build_version_assets("https://download.example/stable/", "6.12")
 
-        self.assertEqual(assets.iso_url, "https://download.example/stable/6.12/tails-amd64-6.12.iso")
-        self.assertEqual(assets.sig_url, "https://download.example/stable/6.12/tails-amd64-6.12.iso.sig")
+        self.assertEqual(
+            assets.iso_url,
+            "https://download.example/stable/tails-amd64-6.12/tails-amd64-6.12.iso",
+        )
+        self.assertEqual(
+            assets.sig_url,
+            "https://download.example/stable/tails-amd64-6.12/tails-amd64-6.12.iso.sig",
+        )
         self.assertEqual(
             assets.sha256_url,
-            "https://download.example/stable/6.12/tails-amd64-6.12.img.sha256",
+            "https://download.example/stable/tails-amd64-6.12/tails-amd64-6.12.img.sha256",
         )
 
 

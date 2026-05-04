@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 import re
 import ssl
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
-from typing import Any, Callable
 from urllib.error import URLError
 from urllib.parse import urljoin
 from urllib.request import urlopen
@@ -18,6 +18,7 @@ from tails_cloner.config import (
 from tails_cloner.models import VersionAssets
 
 _VERSION_RE = re.compile(r"^\d+(?:\.\d+)+$")
+_HISTORY_DIR_RE = re.compile(r"^tails-amd64-(\d+(?:\.\d+)+)/?$")
 
 
 class _DirectoryListingParser(HTMLParser):
@@ -104,11 +105,15 @@ def fetch_json(url: str, timeout_seconds: int) -> object:
 def parse_directory_listing(html: str) -> list[str]:
     parser = _DirectoryListingParser()
     parser.feed(html)
-    versions = {
-        href.rstrip("/")
-        for href in parser.links
-        if is_stable_version(href.rstrip("/"))
-    }
+    versions: set[str] = set()
+    for href in parser.links:
+        normalized = href.rstrip("/")
+        if is_stable_version(normalized):
+            versions.add(normalized)
+            continue
+        match = _HISTORY_DIR_RE.fullmatch(href)
+        if match:
+            versions.add(match.group(1))
     return sorted(versions, key=_version_sort_key, reverse=True)
 
 
@@ -156,7 +161,7 @@ def parse_gitlab_tags_document(payload: object) -> list[str]:
 
 def build_version_assets(base_url: str, version: str) -> VersionAssets:
     normalized_base = base_url if base_url.endswith("/") else f"{base_url}/"
-    directory_url = urljoin(normalized_base, f"{version}/")
+    directory_url = urljoin(normalized_base, f"tails-amd64-{version}/")
     stem = f"tails-amd64-{version}"
     return VersionAssets(
         version=version,
