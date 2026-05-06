@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.5.0 - 2026-05-06
+
+### Experimental Features
+
+- **Boot Loader Order Editing**: Added ability to parse and reorder boot menu entries via new `boot_loader.py` module with UI integration in `post_write.py`.
+- **Network/Tor Support**: Implemented `network.py` for Tor detection and `torify`/`curl` fetching with remote catalog integration.
+- **Drive Inspection**: Added privileged version detection logic and Tails installation analysis via extended `drive_inspector.py`.
+- **Persistence-Preserving Upgrades**: Introduced `upgrader.py` for Tails upgrades that preserve user persistence data.
+
+### Technical Improvements
+
+- Added `BootLoaderOrderOptions` to models and wired through `PostWriteOptions`.
+- Refactored remote_index.py to use new network helpers and support Tor fetching.
+- Extended test coverage for boot-loader, network, post-write, and upgrader features.
+
 ## v0.4.1 - 2026-05-03
 
 - Introduced a tabbed UI workflow:
