@@ -23,11 +23,18 @@ class VersionAssets:
 
 
 @dataclass(slots=True)
+class BootLoaderOrderOptions:
+    enabled: bool = False
+    entries: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class PostWriteOptions:
     enabled: bool = False
     sync_device: bool = True
     settle_seconds: float = 2.0
     log_file_path: str = ""
+    boot_loader_order: BootLoaderOrderOptions = field(default_factory=BootLoaderOrderOptions)
 
 
 @dataclass(slots=True)

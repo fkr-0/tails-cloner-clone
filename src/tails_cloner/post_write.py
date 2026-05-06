@@ -1,18 +1,21 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import time
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
+from tails_cloner.boot_loader import apply_boot_loader_order_to_directory
 from tails_cloner.models import PostWriteOptions
 
 ProgressCallback = Callable[[str], None] | None
 SyncRunner = Callable[[], None]
 SleepRunner = Callable[[float], None]
 TimestampProvider = Callable[[], datetime]
-
+CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
 
 
 def _emit(progress_callback: ProgressCallback, message: str) -> None:
@@ -20,10 +23,8 @@ def _emit(progress_callback: ProgressCallback, message: str) -> None:
         progress_callback(message)
 
 
-
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
-
 
 
 def _append_audit_log(log_file_path: str, lines: list[str]) -> None:
@@ -33,6 +34,57 @@ def _append_audit_log(log_file_path: str, lines: list[str]) -> None:
         handle.write("\n".join(lines) + "\n")
 
 
+def _partition_path(device_path: str, partition_number: int) -> str:
+    if device_path[-1:].isdigit():
+        return f"{device_path}p{partition_number}"
+    return f"{device_path}{partition_number}"
+
+
+def _run_checked(command: list[str], run: CommandRunner) -> subprocess.CompletedProcess[str]:
+    return run(command, check=True, text=True, capture_output=True)
+
+
+def _apply_boot_loader_order(
+    device_path: str,
+    options: PostWriteOptions,
+    progress_callback: ProgressCallback,
+    run: CommandRunner = subprocess.run,
+) -> list[str]:
+    if not options.boot_loader_order.enabled or not options.boot_loader_order.entries:
+        return []
+
+    boot_partition = _partition_path(device_path, 1)
+    changed_paths: list[str] = []
+    _emit(progress_callback, f"Applying experimental boot-loader order on {boot_partition}...")
+
+    with TemporaryDirectory(prefix="tails-cloner-boot-") as mount_dir:
+        mount_path = Path(mount_dir)
+        mounted = False
+        try:
+            _run_checked(["mount", "-o", "rw", boot_partition, str(mount_path)], run)
+            mounted = True
+            result = apply_boot_loader_order_to_directory(mount_path, options.boot_loader_order.entries)
+            if not result.files:
+                _emit(progress_callback, "No supported boot-loader config files found on boot partition.")
+                return []
+            for file_result in result.files:
+                rel_path = file_result.path.relative_to(mount_path)
+                if file_result.changed:
+                    backup_rel = file_result.backup_path.relative_to(mount_path) if file_result.backup_path else None
+                    changed_paths.append(str(rel_path))
+                    _emit(
+                        progress_callback,
+                        f"Reordered {rel_path}; backup: {backup_rel or 'none'}",
+                    )
+                elif file_result.unsupported_reason:
+                    _emit(progress_callback, f"Skipped {rel_path}: {file_result.unsupported_reason}")
+                else:
+                    _emit(progress_callback, f"No boot-loader order change needed for {rel_path}.")
+            return changed_paths
+        finally:
+            if mounted:
+                run(["umount", str(mount_path)], check=False, text=True, capture_output=True)
+
 
 def apply_post_write_options(
     device_path: str,
@@ -41,12 +93,12 @@ def apply_post_write_options(
     sync_runner: SyncRunner = os.sync,
     sleep_runner: SleepRunner = time.sleep,
     timestamp_provider: TimestampProvider = _utc_now,
+    command_runner: CommandRunner = subprocess.run,
 ) -> None:
     """Apply optional post-write customizations after a successful clone.
 
-    This hook is intentionally generic and opt-in only. It provides a stable
-    extension point for safe post-write features without changing the default
-    clone behavior.
+    Experimental boot-loader ordering is intentionally behind
+    PostWriteOptions.enabled + PostWriteOptions.boot_loader_order.enabled.
     """
     if not options.enabled:
         return
@@ -59,6 +111,9 @@ def apply_post_write_options(
         f"sync_device={options.sync_device}",
         f"settle_seconds={options.settle_seconds}",
     ]
+    if options.boot_loader_order.enabled:
+        log_lines.append("boot_loader_order_enabled=true")
+        log_lines.extend(f"boot_loader_order_entry={entry}" for entry in options.boot_loader_order.entries)
 
     _emit(progress_callback, f"Running optional post-write customizations for {device_path}...")
 
@@ -69,6 +124,13 @@ def apply_post_write_options(
     if options.settle_seconds > 0:
         _emit(progress_callback, f"Waiting {options.settle_seconds:.1f}s for device to settle...")
         sleep_runner(options.settle_seconds)
+
+    changed_boot_files = _apply_boot_loader_order(device_path, options, progress_callback, command_runner)
+    log_lines.extend(f"boot_loader_order_changed_file={path}" for path in changed_boot_files)
+
+    if changed_boot_files and options.sync_device:
+        _emit(progress_callback, "Flushing boot-loader changes...")
+        sync_runner()
 
     finished_at = timestamp_provider()
     log_lines.extend(

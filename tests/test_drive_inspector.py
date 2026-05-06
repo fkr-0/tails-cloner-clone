@@ -4,7 +4,11 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from tails_cloner.drive_inspector import has_tails_installation, inspect_drive_tails_facts
+from tails_cloner.drive_inspector import (
+    has_tails_installation,
+    inspect_drive_tails_facts,
+    read_tails_version_from_unmounted_partition,
+)
 
 
 class _RunResult:
@@ -119,3 +123,49 @@ def test_inspect_drive_handles_missing_block_device() -> None:
     assert facts.tails_version is None
     assert facts.persistence_configured is False
     assert facts.persistence_partition_size_bytes is None
+
+
+def test_unmounted_version_detection_reports_privilege_required_by_default() -> None:
+    version, error, requires_privilege = read_tails_version_from_unmounted_partition("/dev/sdb1")
+
+    assert version is None
+    assert error is not None
+    assert "privileged" in error
+    assert requires_privilege is True
+
+
+def test_inspect_drive_marks_unmounted_version_as_privileged() -> None:
+    payload = {
+        "blockdevices": [
+            {
+                "path": "/dev/sdb",
+                "type": "disk",
+                "pttype": "gpt",
+                "fstype": "",
+                "children": [
+                    {
+                        "path": "/dev/sdb1",
+                        "type": "part",
+                        "fstype": "vfat",
+                        "label": "Tails",
+                        "mountpoints": [None],
+                        "size": "1073741824",
+                    }
+                ],
+            }
+        ]
+    }
+
+    def fake_run(*args, **kwargs):
+        del args, kwargs
+        import json
+
+        return _RunResult(json.dumps(payload))
+
+    with patch("tails_cloner.drive_inspector.is_running_tails", return_value=False):
+        facts = inspect_drive_tails_facts("/dev/sdb", run=fake_run)
+
+    assert facts.tails_installed is True
+    assert facts.tails_version is None
+    assert facts.version_detection_requires_privilege is True
+    assert facts.version_detection_error is not None

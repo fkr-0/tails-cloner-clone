@@ -6,7 +6,6 @@ import ssl
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
-from urllib.error import URLError
 from urllib.parse import urljoin
 from urllib.request import urlopen
 
@@ -16,6 +15,7 @@ from tails_cloner.config import (
     VERSIONS_REFRESH_TIMEOUT_SECONDS,
 )
 from tails_cloner.models import VersionAssets
+from tails_cloner.network import fetch_text_torified, is_cert_verification_error, should_use_torify
 
 _VERSION_RE = re.compile(r"^\d+(?:\.\d+)+$")
 _HISTORY_DIR_RE = re.compile(r"^tails-amd64-(\d+(?:\.\d+)+)/?$")
@@ -63,6 +63,9 @@ def is_stable_version(version: str) -> bool:
 
 
 def fetch_text(url: str, timeout_seconds: int) -> str:
+    if should_use_torify():
+        return fetch_text_torified(url, timeout_seconds)
+
     ssl_context = ssl.create_default_context()
     try:
         import certifi
@@ -75,25 +78,12 @@ def fetch_text(url: str, timeout_seconds: int) -> str:
         with urlopen(url, timeout=timeout_seconds, context=ssl_context) as response:  # noqa: S310 - remote catalog is user-configurable app input
             return response.read().decode("utf-8", errors="replace")
     except Exception as error:
-        if not _is_cert_verification_error(error):
+        if not is_cert_verification_error(error):
             raise
         # Some AppImage environments ship without a complete trust store.
         insecure_context = ssl._create_unverified_context()  # noqa: SLF001
         with urlopen(url, timeout=timeout_seconds, context=insecure_context) as response:  # noqa: S310 - remote catalog is user-configurable app input
             return response.read().decode("utf-8", errors="replace")
-
-
-def _is_cert_verification_error(error: Exception) -> bool:
-    if isinstance(error, ssl.SSLCertVerificationError):
-        return True
-    if isinstance(error, URLError):
-        reason = getattr(error, "reason", None)
-        if isinstance(reason, ssl.SSLCertVerificationError):
-            return True
-        if isinstance(reason, str) and "CERTIFICATE_VERIFY_FAILED" in reason:
-            return True
-    message = str(error)
-    return "CERTIFICATE_VERIFY_FAILED" in message
 
 
 

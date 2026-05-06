@@ -9,6 +9,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from urllib.request import urlopen
 
+from tails_cloner.boot_loader import discover_boot_loader_entries
 from tails_cloner.config import BRANDING, FONT_SIZE_LARGE, FONT_SIZE_MEDIUM, MIN_WINDOW_SIZE, REFRESH_INTERVAL_MS, WINDOW_SIZE
 from tails_cloner.controller import ApplicationController
 from tails_cloner.devices import MIN_INSTALLATION_SIZE_GB
@@ -46,6 +47,8 @@ class TailsClonerApp(tk.Tk):
         self.local_checksum_var = tk.StringVar(value="")
         self.action_mode_var = tk.StringVar(value="install")
         self.experimental_enabled_var = tk.BooleanVar(value=False)
+        self.boot_loader_entry_var = tk.StringVar(value="")
+        self.boot_loader_status_var = tk.StringVar(value="Parse entries from the selected image, then reorder them.")
         self.tab2_source_var = tk.StringVar(value="Source: not selected")
         # Source mode variables
         self.source_mode_var = tk.StringVar(value="local")
@@ -232,11 +235,58 @@ class TailsClonerApp(tk.Tk):
 
         exp_panel = ttk.LabelFrame(tab_write, text="Experimental", padding=12)
         exp_panel.grid(row=0, column=0, sticky="ew", pady=(0, 8))
-        ttk.Checkbutton(exp_panel, text="Enable experimental controls", variable=self.experimental_enabled_var, command=self._sync_experimental_state).grid(row=0, column=0, sticky="w")
-        self.exp_boot_stub = ttk.Entry(exp_panel)
-        self.exp_boot_stub.insert(0, "Stub: custom boot order file / menu reorder")
-        self.exp_boot_stub.grid(row=1, column=0, sticky="ew", pady=(8, 0))
         exp_panel.columnconfigure(0, weight=1)
+        ttk.Checkbutton(
+            exp_panel,
+            text="Enable experimental controls",
+            variable=self.experimental_enabled_var,
+            command=self._sync_experimental_state,
+        ).grid(row=0, column=0, sticky="w")
+
+        self.experimental_notebook = ttk.Notebook(exp_panel)
+        self.experimental_notebook.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        self.boot_order_tab = ttk.Frame(self.experimental_notebook, padding=8)
+        self.experimental_notebook.add(self.boot_order_tab, text="Boot-loader order")
+        self.boot_order_tab.columnconfigure(0, weight=1)
+        self.boot_order_tab.columnconfigure(1, weight=0)
+        self.boot_order_tab.rowconfigure(1, weight=1)
+
+        ttk.Label(
+            self.boot_order_tab,
+            text="Parse boot entries from the selected image, then reorder, remove, or add entries.",
+            wraplength=720,
+            justify="left",
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
+        self.boot_order_list = tk.Listbox(self.boot_order_tab, height=5, exportselection=False, activestyle="none")
+        self.boot_order_list.grid(row=1, column=0, sticky="nsew")
+        boot_buttons = ttk.Frame(self.boot_order_tab)
+        boot_buttons.grid(row=1, column=1, sticky="ns", padx=(8, 0))
+        self.boot_order_up_button = ttk.Button(boot_buttons, text="↑", width=3, command=lambda: self._move_boot_order_entry(-1))
+        self.boot_order_up_button.grid(row=0, column=0, sticky="ew", pady=(0, 4))
+        self.boot_order_down_button = ttk.Button(boot_buttons, text="↓", width=3, command=lambda: self._move_boot_order_entry(1))
+        self.boot_order_down_button.grid(row=1, column=0, sticky="ew", pady=(0, 4))
+        self.boot_order_remove_button = ttk.Button(boot_buttons, text="−", width=3, command=self._remove_boot_order_entry)
+        self.boot_order_remove_button.grid(row=2, column=0, sticky="ew", pady=(0, 4))
+        add_row = ttk.Frame(self.boot_order_tab)
+        add_row.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        add_row.columnconfigure(0, weight=1)
+        self.boot_order_entry = ttk.Entry(add_row, textvariable=self.boot_loader_entry_var)
+        self.boot_order_entry.grid(row=0, column=0, sticky="ew")
+        self.boot_order_add_button = ttk.Button(add_row, text="+", width=3, command=self._add_boot_order_entry)
+        self.boot_order_add_button.grid(row=0, column=1, padx=(8, 0))
+        self.boot_order_parse_button = ttk.Button(
+            self.boot_order_tab,
+            text="Parse from selected image/source",
+            command=lambda: self.controller.executor.submit(self._parse_boot_order_entries_task),
+        )
+        self.boot_order_parse_button.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        ttk.Label(
+            self.boot_order_tab,
+            textvariable=self.boot_loader_status_var,
+            foreground="#666666",
+            wraplength=720,
+            justify="left",
+        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(6, 0))
 
         right = ttk.LabelFrame(tab_write, text="Write image to device", padding=12)
         right.grid(row=1, column=0, sticky="nsew")
@@ -344,6 +394,8 @@ class TailsClonerApp(tk.Tk):
         self.option_add("*Listbox.SelectForeground", "#ffffff")
         if hasattr(self, "versions_list"):
             self.versions_list.configure(bg=listbox_bg, fg=fg, selectbackground=select_bg, selectforeground="#ffffff")
+        if hasattr(self, "boot_order_list"):
+            self.boot_order_list.configure(bg=listbox_bg, fg=fg, selectbackground=select_bg, selectforeground="#ffffff")
         if hasattr(self, "theme_button"):
             self.theme_button.config(text="☀" if dark_mode else "🌙")
         if hasattr(self, "downloads_link_label"):
@@ -441,7 +493,100 @@ class TailsClonerApp(tk.Tk):
 
     def _sync_experimental_state(self) -> None:
         state = "normal" if self.experimental_enabled_var.get() else "disabled"
-        self.exp_boot_stub.config(state=state)
+        widgets = [
+            self.boot_order_list,
+            self.boot_order_entry,
+            self.boot_order_add_button,
+            self.boot_order_remove_button,
+            self.boot_order_up_button,
+            self.boot_order_down_button,
+            self.boot_order_parse_button,
+        ]
+        for widget in widgets:
+            try:
+                widget.config(state=state)
+            except tk.TclError:
+                pass
+        self._sync_post_write_options()
+
+    def _boot_order_entries(self) -> list[str]:
+        return [str(self.boot_order_list.get(index)) for index in range(self.boot_order_list.size())]
+
+    def _set_boot_order_entries(self, entries: list[str]) -> None:
+        self.boot_order_list.delete(0, tk.END)
+        seen: set[str] = set()
+        for raw_entry in entries:
+            entry = raw_entry.strip()
+            if not entry or entry in seen:
+                continue
+            seen.add(entry)
+            self.boot_order_list.insert(tk.END, entry)
+        if self.boot_order_list.size() > 0:
+            self.boot_order_list.selection_set(0)
+        self._sync_post_write_options()
+
+    def _sync_post_write_options(self) -> None:
+        options = self.controller.state.post_write_options
+        options.enabled = self.experimental_enabled_var.get()
+        options.boot_loader_order.enabled = self.experimental_enabled_var.get()
+        options.boot_loader_order.entries = self._boot_order_entries() if self.experimental_enabled_var.get() else []
+
+    def _selected_boot_order_index(self) -> int | None:
+        selection = self.boot_order_list.curselection()
+        return int(selection[0]) if selection else None
+
+    def _move_boot_order_entry(self, direction: int) -> None:
+        index = self._selected_boot_order_index()
+        if index is None:
+            return
+        new_index = index + direction
+        if new_index < 0 or new_index >= self.boot_order_list.size():
+            return
+        entry = self.boot_order_list.get(index)
+        self.boot_order_list.delete(index)
+        self.boot_order_list.insert(new_index, entry)
+        self.boot_order_list.selection_clear(0, tk.END)
+        self.boot_order_list.selection_set(new_index)
+        self.boot_order_list.activate(new_index)
+        self._sync_post_write_options()
+
+    def _remove_boot_order_entry(self) -> None:
+        index = self._selected_boot_order_index()
+        if index is None:
+            return
+        self.boot_order_list.delete(index)
+        next_index = min(index, self.boot_order_list.size() - 1)
+        if next_index >= 0:
+            self.boot_order_list.selection_set(next_index)
+        self._sync_post_write_options()
+
+    def _add_boot_order_entry(self) -> None:
+        entry = self.boot_loader_entry_var.get().strip()
+        if not entry:
+            return
+        if entry not in self._boot_order_entries():
+            self.boot_order_list.insert(tk.END, entry)
+            self.boot_order_list.selection_clear(0, tk.END)
+            self.boot_order_list.selection_set(tk.END)
+        self.boot_loader_entry_var.set("")
+        self._sync_post_write_options()
+
+    def _parse_boot_order_entries_task(self) -> None:
+        source_path = self.image_path_var.get().strip()
+        if self.controller.state.source_mode == SourceMode.RUNNING:
+            source_path = self.controller.state.running_tails_device
+        if not source_path:
+            self.after(0, lambda: self.boot_loader_status_var.set("No image/source selected to parse."))
+            return
+        entries = discover_boot_loader_entries(source_path)
+        if not entries:
+            self.after(0, lambda: self.boot_loader_status_var.set("No boot-loader entries found in selected source."))
+            return
+        self.after(0, lambda e=entries: self._apply_parsed_boot_order_entries(e))
+
+    def _apply_parsed_boot_order_entries(self, entries: list[str]) -> None:
+        self._set_boot_order_entries(entries)
+        self.boot_loader_status_var.set(f"Parsed {len(entries)} boot-loader entr{'y' if len(entries) == 1 else 'ies'}.")
 
     def _on_action_mode_changed(self) -> None:
         if self.action_mode_var.get() == "update":
