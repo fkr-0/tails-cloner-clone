@@ -294,8 +294,20 @@ class TailsClonerApp(tk.Tk):
         ttk.Label(right, textvariable=self.tab2_source_var, wraplength=600, justify="left").grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
         mode_row = ttk.Frame(right)
         mode_row.grid(row=1, column=0, columnspan=3, sticky="w", pady=(0, 10))
-        ttk.Radiobutton(mode_row, text="Install", value="install", variable=self.action_mode_var, command=self._on_action_mode_changed).grid(row=0, column=0, sticky="w")
-        ttk.Radiobutton(mode_row, text="Update", value="update", variable=self.action_mode_var, command=self._on_action_mode_changed).grid(row=0, column=1, sticky="w", padx=(16, 0))
+        ttk.Radiobutton(
+            mode_row,
+            text="Install / Reinstall",
+            value="install",
+            variable=self.action_mode_var,
+            command=self._on_action_mode_changed,
+        ).grid(row=0, column=0, sticky="w")
+        ttk.Radiobutton(
+            mode_row,
+            text="Upgrade existing Tails",
+            value="upgrade",
+            variable=self.action_mode_var,
+            command=self._on_action_mode_changed,
+        ).grid(row=0, column=1, sticky="w", padx=(16, 0))
 
         ttk.Label(right, text="Target device").grid(row=2, column=0, sticky="w")
         self.device_combo = ttk.Combobox(right, textvariable=self.device_var, state="readonly")
@@ -330,11 +342,7 @@ class TailsClonerApp(tk.Tk):
         self.clone_button.grid(row=8, column=0, columnspan=3, sticky="ew", pady=(20, 0))
         # Make clone button the default (activated by Enter)
         self.clone_button.bind("<Return>", lambda e: self._confirm_and_clone())
-        warning_text = (
-            "This tool writes directly to the selected block device with dd. "
-            "Treat it like a loaded weapon and verify the target path every time.\n\n"
-            "All data on the target device will be permanently lost."
-        )
+        warning_text = self._install_warning_text()
         self.install_warning_label = ttk.Label(right, text=warning_text, wraplength=340, justify="left", foreground="#7a1f1f")
         self.install_warning_label.grid(row=9, column=0, columnspan=3, sticky="w", pady=(12, 0))
 
@@ -588,19 +596,28 @@ class TailsClonerApp(tk.Tk):
         self._set_boot_order_entries(entries)
         self.boot_loader_status_var.set(f"Parsed {len(entries)} boot-loader entr{'y' if len(entries) == 1 else 'ies'}.")
 
+    def _install_warning_text(self) -> str:
+        return (
+            "Install/Reinstall writes a complete image to the selected block device. "
+            "Treat it like a loaded weapon and verify the target path every time.\n\n"
+            "All data on the target device, including Persistent Storage, will be permanently lost."
+        )
+
+    def _upgrade_warning_text(self) -> str:
+        return (
+            "Upgrade replaces only the existing Tails system partition. "
+            "Persistent Storage is kept intact.\n\n"
+            "Only select this for a device that already has Tails installed."
+        )
+
+    def _upgrade_mode_enabled(self) -> bool:
+        return self.action_mode_var.get() in {"upgrade", "update"}
+
     def _on_action_mode_changed(self) -> None:
-        if self.action_mode_var.get() == "update":
-            self.install_warning_label.config(
-                text="Update mode preserves existing Persistent Storage when possible.",
-                foreground="#2e7d32",
-            )
+        if self._upgrade_mode_enabled():
+            self.install_warning_label.config(text=self._upgrade_warning_text(), foreground="#2e7d32")
         else:
-            warning_text = (
-                "This tool writes directly to the selected block device with dd. "
-                "Treat it like a loaded weapon and verify the target path every time.\n\n"
-                "All data on the target device will be permanently lost."
-            )
-            self.install_warning_label.config(text=warning_text, foreground="#7a1f1f")
+            self.install_warning_label.config(text=self._install_warning_text(), foreground="#7a1f1f")
         self._sync_devices()
 
     def _schedule_local_checksum_refresh(self) -> None:
@@ -789,11 +806,19 @@ class TailsClonerApp(tk.Tk):
         confirmed = messagebox.askyesno(title, message, icon=messagebox.WARNING)
         if not confirmed:
             return
-        self.controller.executor.submit(self._run_clone, image_path, device_path)
+        is_upgrade = button_text == "Upgrade"
+        self.controller.executor.submit(self._run_write_operation, image_path, device_path, is_upgrade)
 
-    def _run_clone(self, image_path: str | None, device_path: str) -> None:
-        # Show progress UI
-        self.after(0, lambda: self._show_clone_progress(True))
+    def _run_write_operation(self, image_path: str | None, device_path: str, is_upgrade: bool) -> None:
+        operation_label = "upgrade" if is_upgrade else "installation"
+        complete_title = "Upgrade complete" if is_upgrade else "Installation complete"
+        complete_message = (
+            f"Tails has been upgraded on {device_path}. Persistent Storage was preserved."
+            if is_upgrade
+            else f"Tails has been successfully installed to {device_path}."
+        )
+
+        self.after(0, lambda: self._show_clone_progress(True, operation_label=operation_label))
         self.after(0, lambda: self.clone_button.config(state="disabled"))
         self.after(0, lambda: self.progress_bar.start(10))
 
@@ -801,22 +826,31 @@ class TailsClonerApp(tk.Tk):
             def on_progress(message: str) -> None:
                 self.after(0, lambda m=message: self.progress_label.config(text=m))
 
-            self.controller.clone_selected_image(image_path, device_path, progress_callback=on_progress)
+            if is_upgrade:
+                self.controller.upgrade_selected_image(image_path, device_path, progress_callback=on_progress)
+            else:
+                self.controller.clone_selected_image(image_path, device_path, progress_callback=on_progress)
 
-            # Clone completed successfully
             self.after(0, lambda: self._show_clone_progress(False))
             self.after(0, lambda: self.clone_button.config(state="normal"))
-            self.after(0, lambda: messagebox.showinfo("Installation complete", f"Tails has been successfully installed to {device_path}."))
+            self.after(0, lambda: messagebox.showinfo(complete_title, complete_message))
         except Exception as error:  # noqa: BLE001 - converted into visible UI feedback
             self.after(0, lambda: self._show_clone_progress(False))
             self.after(0, lambda: self.clone_button.config(state="normal"))
-            self.controller.state.status_message = f"Clone failed: {error}"
-            self.after(0, lambda: messagebox.showerror("Clone failed", str(error)))
+            error_message = str(error)
+            self.controller.state.status_message = f"{operation_label.title()} failed: {error_message}"
+            self.after(
+                0,
+                lambda message=error_message: messagebox.showerror(
+                    f"{operation_label.title()} failed",
+                    message,
+                ),
+            )
 
-    def _show_clone_progress(self, show: bool) -> None:
+    def _show_clone_progress(self, show: bool, operation_label: str = "operation") -> None:
         if show:
             self.progress_frame.grid()
-            self.progress_label.config(text="Starting clone operation...")
+            self.progress_label.config(text=f"Starting {operation_label}...")
         else:
             self.progress_bar.stop()
             self.progress_frame.grid_remove()
@@ -897,7 +931,7 @@ class TailsClonerApp(tk.Tk):
                 if get_parent_disk_path(d.path) != running_parent
             ]
 
-        if self.action_mode_var.get() == "update":
+        if self._upgrade_mode_enabled():
             devices = [d for d in devices if d.has_tails]
         labels = {device.pretty_name: device.path for device in devices}
         snapshot = tuple(labels)
@@ -937,24 +971,37 @@ class TailsClonerApp(tk.Tk):
             return
 
         warnings = []
+        upgrade_mode = self._upgrade_mode_enabled()
 
         # Check for various device issues (matching legacy installer behavior)
         if device.read_only:
             warnings.append("This device is read-only and cannot be written to.")
+        elif upgrade_mode:
+            if not device.has_tails:
+                warnings.append("Upgrade requires an existing Tails installation on the selected target.")
+                self.clone_button.config(text="Upgrade", state="disabled")
+                self.device_warning_label.config(text="\n".join(warnings))
+                return
+            if not device.is_big_enough_for_upgrade:
+                warnings.append("This Tails device is too small for a safe upgrade from this version. Use Install/Reinstall only if you accept deleting all data.")
+                self.clone_button.config(text="Upgrade", state="disabled")
+                self.device_warning_label.config(text="\n".join(warnings))
+                return
+            self.clone_button.config(text="Upgrade")
+            self.device_status_label.config(text="Existing Tails installation detected. Upgrade will preserve Persistent Storage.", foreground="#2e7d32")
         elif not device.is_big_enough_for_installation:
             warnings.append(f"This device is too small to install Tails (at least {MIN_INSTALLATION_SIZE_GB} GB is required).")
             self.device_warning_label.config(text="\n".join(warnings))
             self.clone_button.config(text="Install", state="disabled")
             return
         elif device.has_tails:
-            if device.is_big_enough_for_upgrade:
-                self.clone_button.config(text="Upgrade")
-                self.device_status_label.config(text="Device has Tails installed. You can upgrade or reinstall.", foreground="#2e7d32")
-            else:
-                warnings.append("This device has Tails installed but is too small for an upgrade from this version. Use a downloaded ISO image instead.")
-                self.clone_button.config(text="Reinstall (delete all data)")
+            self.clone_button.config(text="Reinstall (delete all data)")
+            self.device_status_label.config(text="Device has Tails installed. Install/Reinstall will delete Persistent Storage.", foreground="#a63636")
         elif not device.removable:
             warnings.append("This device is configured as non-removable by its manufacturer. Tails may fail to start from it. Please try installing on a different model.")
+            self.clone_button.config(text="Install")
+        else:
+            self.clone_button.config(text="Install")
 
         if warnings:
             self.device_warning_label.config(text="\n".join(warnings))
@@ -998,11 +1045,11 @@ class TailsClonerApp(tk.Tk):
 
         action = self.clone_button.cget("text")
         if action == "Upgrade":
-            action_desc = "Upgrade preserving Persistent Storage"
+            action_desc = "Upgrade existing Tails; Persistent Storage preserved"
         elif action == "Reinstall (delete all data)":
-            action_desc = "Reinstall (deletes all data)"
+            action_desc = "Reinstall; deletes all data including Persistent Storage"
         else:
-            action_desc = "Install (deletes all data)"
+            action_desc = "Install; deletes all data on the target"
 
         self.upgrade_plan_var.set(f"Source: {source_desc}\nTarget: {target_device}\nAction: {action_desc}")
 

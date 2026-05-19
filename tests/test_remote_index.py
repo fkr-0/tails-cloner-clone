@@ -51,7 +51,10 @@ class RemoteIndexTests(unittest.TestCase):
             def read(self) -> bytes:
                 return b"ok"
 
-        with patch("tails_cloner.remote_index.urlopen", return_value=FakeResponse()) as mock_urlopen:
+        with (
+            patch("tails_cloner.remote_index.should_use_torify", return_value=False),
+            patch("tails_cloner.remote_index.urlopen", return_value=FakeResponse()) as mock_urlopen,
+        ):
             text = fetch_text("https://example.invalid/catalog", 7)
 
         self.assertEqual(text, "ok")
@@ -69,10 +72,13 @@ class RemoteIndexTests(unittest.TestCase):
             def read(self) -> bytes:
                 return b"ok-fallback"
 
-        with patch(
-            "tails_cloner.remote_index.urlopen",
-            side_effect=[SSLCertVerificationError("bad cert"), FakeResponse()],
-        ) as mock_urlopen:
+        with (
+            patch("tails_cloner.remote_index.should_use_torify", return_value=False),
+            patch(
+                "tails_cloner.remote_index.urlopen",
+                side_effect=[SSLCertVerificationError("bad cert"), FakeResponse()],
+            ) as mock_urlopen,
+        ):
             text = fetch_text("https://example.invalid/catalog", 7)
 
         self.assertEqual(text, "ok-fallback")
@@ -89,10 +95,13 @@ class RemoteIndexTests(unittest.TestCase):
             def read(self) -> bytes:
                 return b"ok-fallback-wrapped"
 
-        with patch(
-            "tails_cloner.remote_index.urlopen",
-            side_effect=[URLError(SSLCertVerificationError("bad cert")), FakeResponse()],
-        ) as mock_urlopen:
+        with (
+            patch("tails_cloner.remote_index.should_use_torify", return_value=False),
+            patch(
+                "tails_cloner.remote_index.urlopen",
+                side_effect=[URLError(SSLCertVerificationError("bad cert")), FakeResponse()],
+            ) as mock_urlopen,
+        ):
             text = fetch_text("https://example.invalid/catalog", 7)
 
         self.assertEqual(text, "ok-fallback-wrapped")

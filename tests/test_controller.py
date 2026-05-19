@@ -56,6 +56,7 @@ class FakeDeviceService:
 class FakeCloneService:
     def __init__(self):
         self.calls = []
+        self.upgrade_calls = []
 
     def clone_image(
         self,
@@ -67,6 +68,16 @@ class FakeCloneService:
         self.calls.append((image_path, device_path, post_write_options))
         if progress_callback:
             progress_callback("done")
+
+    def upgrade_image(
+        self,
+        image_path: str,
+        device_path: str,
+        progress_callback=None,
+    ):
+        self.upgrade_calls.append((image_path, device_path))
+        if progress_callback:
+            progress_callback("partition upgrade done")
 
 
 class ControllerTests(unittest.TestCase):
@@ -125,8 +136,26 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(clone_service.calls[0][0], "/tmp/tails.iso")
         self.assertEqual(clone_service.calls[0][1], "/dev/sdb")
         self.assertIsNotNone(clone_service.calls[0][2])
-        self.assertEqual(controller.state.status_message, "Clone completed successfully.")
+        self.assertEqual(controller.state.status_message, "Installation completed successfully.")
         self.assertEqual(controller.state.last_clone_progress, "done")
+
+    def test_upgrade_selected_image_uses_partition_scoped_upgrade_service(self) -> None:
+        clone_service = FakeCloneService()
+        controller = ApplicationController(
+            state=AppState(),
+            version_service=FakeVersionService(),
+            device_service=FakeDeviceService(),
+            clone_service=clone_service,
+            executor=ThreadPoolExecutor(max_workers=1),
+        )
+        self.addCleanup(controller.shutdown)
+
+        controller.upgrade_selected_image("/tmp/tails.img", "/dev/sdb")
+
+        self.assertEqual(clone_service.calls, [])
+        self.assertEqual(clone_service.upgrade_calls, [("/tmp/tails.img", "/dev/sdb")])
+        self.assertEqual(controller.state.status_message, "Upgrade completed successfully. Persistent Storage preserved.")
+        self.assertEqual(controller.state.last_clone_progress, "partition upgrade done")
 
     def test_refresh_devices_uses_generic_device_wording(self) -> None:
         controller = ApplicationController(

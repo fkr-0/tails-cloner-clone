@@ -138,34 +138,35 @@ class ApplicationController:
         self.state.selected_signature_url = entry.sig_url
         self.state.selected_checksum_url = entry.sha256_url
 
-    def clone_selected_image(self, image_path: str | None, device_path: str, progress_callback=None) -> None:
-        """Clone an image to the target device.
-
-        If image_path is None and source_mode is RUNNING, uses the running Tails ISO.
-        """
+    def _resolve_source_image_path(self, image_path: str | None, operation_name: str) -> str:
+        """Resolve the image used for install/reinstall/upgrade operations."""
         actual_image_path = image_path
 
-        # If cloning from running Tails, use the embedded ISO
         if self.state.source_mode == SourceMode.RUNNING and actual_image_path is None:
             from tails_cloner.source import RunningLiveSystemSource
             source = RunningLiveSystemSource()
             iso_path = source.get_iso_path()
             if iso_path and iso_path.exists():
                 actual_image_path = str(iso_path)
-                self.state.status_message = f"Using embedded Tails ISO from running system..."
+                self.state.status_message = "Using embedded Tails ISO from running system..."
             else:
                 self.state.status_message = "Error: Tails ISO not found in running system."
                 raise RuntimeError("Tails ISO not found in running system at /lib/live/mount/medium/live/Tails.iso")
 
         if actual_image_path is None:
             self.state.status_message = "Error: No image path specified."
-            raise ValueError("Image path is required when not cloning from running Tails")
+            raise ValueError(f"Image path is required when not {operation_name} from running Tails")
 
-        self.state.status_message = f"Cloning {actual_image_path} to {device_path}…"
+        return actual_image_path
+
+    def clone_selected_image(self, image_path: str | None, device_path: str, progress_callback=None) -> None:
+        """Install or reinstall an image to the target device with a whole-device write."""
+        actual_image_path = self._resolve_source_image_path(image_path, "installing")
+        self.state.status_message = f"Installing {actual_image_path} to {device_path}…"
 
         def on_progress(message: str) -> None:
             self.state.last_clone_progress = message
-            self.state.status_message = f"Cloning… {message}"
+            self.state.status_message = f"Installing… {message}"
             if progress_callback:
                 progress_callback(message)
 
@@ -175,4 +176,22 @@ class ApplicationController:
             progress_callback=on_progress,
             post_write_options=self.state.post_write_options,
         )
-        self.state.status_message = "Clone completed successfully."
+        self.state.status_message = "Installation completed successfully."
+
+    def upgrade_selected_image(self, image_path: str | None, device_path: str, progress_callback=None) -> None:
+        """Upgrade an existing Tails target while preserving Persistent Storage."""
+        actual_image_path = self._resolve_source_image_path(image_path, "upgrading")
+        self.state.status_message = f"Upgrading {device_path} from {actual_image_path}; Persistent Storage will be preserved…"
+
+        def on_progress(message: str) -> None:
+            self.state.last_clone_progress = message
+            self.state.status_message = f"Upgrading… {message}"
+            if progress_callback:
+                progress_callback(message)
+
+        self.clone_service.upgrade_image(
+            image_path=actual_image_path,
+            device_path=device_path,
+            progress_callback=on_progress,
+        )
+        self.state.status_message = "Upgrade completed successfully. Persistent Storage preserved."

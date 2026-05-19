@@ -2,7 +2,11 @@
 lab_profile: default
 fixture_mount_root: /opt/tails-cloner-fixtures
 fixture_state_file: /opt/tails-cloner-fixtures/fixture-state.json
+# Compatibility path used by lab scripts. Provisioning keeps this as a symlink
+# into tails_artifacts_cache_dir so multi-GB Tails images survive VM destroy/recreate.
 tails_artifacts_dir: /opt/tails-cloner-fixtures/tails-images
+# Host-synced cache through the repo mount; ignored by git via .cache/.
+tails_artifacts_cache_dir: /workspace/tails-cloner/.cache/vagrant-lab/tails-images
 # Set to require after filling the pinned sha256 values below.
 tails_artifact_checksum_policy: warn
 tails_test_artifacts:

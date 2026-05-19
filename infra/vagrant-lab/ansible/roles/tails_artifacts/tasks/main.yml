@@ -1,9 +1,44 @@
 ---
-- name: Create artifacts directory
+- name: Create persistent host-synced artifacts cache directory
   file:
-    path: "{{ tails_artifacts_dir }}"
+    path: "{{ tails_artifacts_cache_dir }}"
     state: directory
     mode: '0755'
+
+- name: Inspect compatibility artifacts path
+  stat:
+    path: "{{ tails_artifacts_dir }}"
+  register: tails_artifacts_dir_stat
+
+- name: Migrate existing VM-local artifacts into persistent cache
+  shell: |
+    set -euo pipefail
+    shopt -s nullglob
+    for artifact in "{{ tails_artifacts_dir }}"/*; do
+      if [ -f "$artifact" ]; then
+        mv -n "$artifact" "{{ tails_artifacts_cache_dir }}/"
+      fi
+    done
+  args:
+    executable: /bin/bash
+  when:
+    - tails_artifacts_dir_stat.stat.isdir | default(false)
+    - not (tails_artifacts_dir_stat.stat.islnk | default(false))
+
+- name: Remove VM-local artifacts directory after migration
+  file:
+    path: "{{ tails_artifacts_dir }}"
+    state: absent
+  when:
+    - tails_artifacts_dir_stat.stat.isdir | default(false)
+    - not (tails_artifacts_dir_stat.stat.islnk | default(false))
+
+- name: Link compatibility artifacts path to persistent cache
+  file:
+    src: "{{ tails_artifacts_cache_dir }}"
+    dest: "{{ tails_artifacts_dir }}"
+    state: link
+    force: true
 
 - name: Remove legacy fallback manifest if present
   file:
