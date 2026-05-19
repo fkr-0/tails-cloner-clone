@@ -1,0 +1,113 @@
+---
+- name: Discover non-system disks
+  shell: |
+    set -euo pipefail
+    lsblk -dn -o NAME,TYPE | awk '$2 == "disk" {print "/dev/"$1}'
+  args:
+    executable: /bin/bash
+  register: all_disks
+  changed_when: false
+
+- name: Determine primary OS disk parent
+  shell: |
+    set -euo pipefail
+    root_src=$(findmnt -n -o SOURCE /)
+    parent=$(lsblk -no PKNAME "$root_src" 2>/dev/null || true)
+    if [ -n "$parent" ]; then
+      echo "/dev/$parent"
+    else
+      echo "$root_src" | sed -E 's/p?[0-9]+$//'
+    fi
+  args:
+    executable: /bin/bash
+  register: os_disk
+  changed_when: false
+
+- name: Build fixture disk list
+  set_fact:
+    fixture_disks: >-
+      {{
+        all_disks.stdout_lines
+        | reject('equalto', os_disk.stdout)
+        | reject('equalto', '/dev/sda')
+        | list
+      }}
+
+- name: Fail if too few fixture disks
+  fail:
+    msg: "Need at least 3 extra disks, found {{ fixture_disks | length }}: {{ fixture_disks }}"
+  when: fixture_disks | length < 3
+
+- name: Select fixture devices
+  set_fact:
+    source_disk: "{{ fixture_disks[0] }}"
+    target_fresh_disk: "{{ fixture_disks[1] }}"
+    target_upgrade_disk: "{{ fixture_disks[2] }}"
+    target_extra_disk: "{{ fixture_disks[3] if (fixture_disks | length) > 3 else fixture_disks[2] }}"
+
+- name: Wipe fixture signatures
+  shell: |
+    set -euo pipefail
+    for d in {{ source_disk }} {{ target_fresh_disk }} {{ target_upgrade_disk }} {{ target_extra_disk }}; do
+      wipefs -a "$d" || true
+      sgdisk --zap-all "$d" || true
+    done
+  args:
+    executable: /bin/bash
+
+- name: Create upgrade-like disk with persistence marker
+  shell: |
+    set -euo pipefail
+    d={{ target_upgrade_disk }}
+    parted -s "$d" mklabel gpt
+    parted -s "$d" mkpart primary fat32 1MiB 1024MiB
+    parted -s "$d" mkpart primary ext4 1024MiB 100%
+    partprobe "$d"
+    udevadm settle
+    for i in $(seq 1 20); do [ -b "${d}1" ] && [ -b "${d}2" ] && break; sleep 0.5; done
+    mkfs.vfat -n TAILS "${d}1"
+    mkfs.ext4 -F -L persistence "${d}2"
+    mkdir -p {{ fixture_mount_root }}/persist
+    mount "${d}2" {{ fixture_mount_root }}/persist
+    echo 'fixture-persistence' > {{ fixture_mount_root }}/persist/PERSISTENCE_MARKER.txt
+    umount {{ fixture_mount_root }}/persist
+  args:
+    executable: /bin/bash
+
+- name: Create fresh target disk
+  shell: |
+    set -euo pipefail
+    d={{ target_fresh_disk }}
+    parted -s "$d" mklabel gpt
+    parted -s "$d" mkpart primary fat32 1MiB 100%
+    partprobe "$d"
+    udevadm settle
+    for i in $(seq 1 20); do [ -b "${d}1" ] && break; sleep 0.5; done
+    mkfs.vfat -n EMPTY "${d}1"
+  args:
+    executable: /bin/bash
+
+- name: Create source-like disk marker
+  shell: |
+    set -euo pipefail
+    d={{ source_disk }}
+    parted -s "$d" mklabel gpt
+    parted -s "$d" mkpart primary fat32 1MiB 100%
+    partprobe "$d"
+    udevadm settle
+    for i in $(seq 1 20); do [ -b "${d}1" ] && break; sleep 0.5; done
+    mkfs.vfat -n TAILS_SRC "${d}1"
+  args:
+    executable: /bin/bash
+
+- name: Save fixture metadata
+  copy:
+    dest: "{{ fixture_state_file }}"
+    mode: '0644'
+    content: |
+      {
+        "source_disk": "{{ source_disk }}",
+        "target_fresh_disk": "{{ target_fresh_disk }}",
+        "target_upgrade_disk": "{{ target_upgrade_disk }}",
+        "target_extra_disk": "{{ target_extra_disk }}"
+      }

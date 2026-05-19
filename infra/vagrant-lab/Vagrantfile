@@ -1,0 +1,31 @@
+# frozen_string_literal: true
+
+Vagrant.configure('2') do |config|
+  config.vm.box = 'bento/ubuntu-24.04'
+
+  config.vm.provider 'virtualbox' do |vb|
+    vb.memory = 4096
+    vb.cpus = 2
+  end
+
+  config.vm.define 'controller' do |node|
+    node.vm.hostname = 'tails-cloner-controller'
+    node.vm.network 'private_network', ip: '192.168.56.20'
+    node.vm.synced_folder '../..', '/workspace/tails-cloner'
+
+    # Virtual USB-like test disks (as block devices for fixture simulation)
+    node.vm.disk :disk, size: '8GB', name: 'tc_source_disk'
+    node.vm.disk :disk, size: '8GB', name: 'tc_target_fresh'
+    node.vm.disk :disk, size: '8GB', name: 'tc_target_upgrade'
+    node.vm.disk :disk, size: '16GB', name: 'tc_nonremovable_like'
+
+    node.vm.provision 'ansible' do |ansible|
+      ansible.playbook = 'ansible/playbook.yml'
+      ansible.inventory_path = 'ansible/inventory.ini'
+      ansible.limit = 'controller'
+      ansible.extra_vars = {
+        lab_profile: ENV.fetch('LAB_PROFILE', 'default')
+      }
+    end
+  end
+end

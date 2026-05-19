@@ -1,0 +1,16 @@
+---
+lab_profile: default
+fixture_mount_root: /opt/tails-cloner-fixtures
+fixture_state_file: /opt/tails-cloner-fixtures/fixture-state.json
+tails_artifacts_dir: /opt/tails-cloner-fixtures/tails-images
+# Set to require after filling the pinned sha256 values below.
+tails_artifact_checksum_policy: warn
+tails_test_artifacts:
+  - version: 7.7.1
+    filename: tails-amd64-7.7.1.img
+    url: https://iso-history.tails.boum.org/tails-amd64-7.7.1/tails-amd64-7.7.1.img
+    sha256: ""
+  - version: 7.7.2
+    filename: tails-amd64-7.7.2.img
+    url: https://iso-history.tails.boum.org/tails-amd64-7.7.2/tails-amd64-7.7.2.img
+    sha256: ""

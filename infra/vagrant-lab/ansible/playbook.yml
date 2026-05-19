@@ -1,0 +1,8 @@
+---
+- name: Prepare tails-cloner vagrant lab
+  hosts: all
+  become: true
+  roles:
+    - common
+    - disk_fixtures
+    - tails_artifacts

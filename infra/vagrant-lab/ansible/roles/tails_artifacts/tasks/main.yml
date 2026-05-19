@@ -1,0 +1,56 @@
+---
+- name: Create artifacts directory
+  file:
+    path: "{{ tails_artifacts_dir }}"
+    state: directory
+    mode: '0755'
+
+- name: Remove legacy fallback manifest if present
+  file:
+    path: "{{ tails_artifacts_dir }}/artifact-manifest.json"
+    state: absent
+
+- name: Attempt pinned Tails downloads
+  shell: |
+    set -euo pipefail
+    if [ -f "{{ tails_artifacts_dir }}/{{ item.filename }}" ]; then
+      exit 0
+    fi
+    curl -fL --retry 3 --connect-timeout 30 --max-time 0 \
+      -o "{{ tails_artifacts_dir }}/{{ item.filename }}" "{{ item.url }}"
+  args:
+    executable: /bin/bash
+  loop: "{{ tails_test_artifacts }}"
+
+- name: Verify pinned Tails artifact checksums when provided
+  shell: |
+    set -euo pipefail
+    artifact="{{ tails_artifacts_dir }}/{{ item.filename }}"
+    expected="{{ item.sha256 | default('') }}"
+    policy="{{ tails_artifact_checksum_policy | default('warn') }}"
+
+    if [ ! -f "$artifact" ]; then
+      echo "missing artifact: $artifact" >&2
+      exit 1
+    fi
+
+    if [ -z "$expected" ]; then
+      message="sha256 missing for {{ item.filename }}; fill ansible/group_vars/all.yml and set tails_artifact_checksum_policy=require"
+      if [ "$policy" = "require" ]; then
+        echo "$message" >&2
+        exit 1
+      fi
+      echo "WARNING: $message" >&2
+      exit 0
+    fi
+
+    actual=$(sha256sum "$artifact" | awk '{print $1}')
+    if [ "$actual" != "$expected" ]; then
+      echo "sha256 mismatch for {{ item.filename }}" >&2
+      echo "expected: $expected" >&2
+      echo "actual:   $actual" >&2
+      exit 1
+    fi
+  args:
+    executable: /bin/bash
+  loop: "{{ tails_test_artifacts }}"

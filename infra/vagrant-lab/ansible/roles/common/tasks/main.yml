@@ -1,0 +1,60 @@
+---
+- name: Configure apt to be resilient in VM networks
+  copy:
+    dest: /etc/apt/apt.conf.d/99tails-cloner-lab
+    mode: '0644'
+    content: |
+      Acquire::ForceIPv4 "true";
+      Acquire::Retries "5";
+      Acquire::http::Timeout "30";
+      Acquire::https::Timeout "30";
+  when: install_lab_dependencies | default(false) | bool
+
+- name: Switch Ubuntu apt sources to HTTPS
+  replace:
+    path: /etc/apt/sources.list.d/ubuntu.sources
+    regexp: 'http://'
+    replace: 'https://'
+  when: install_lab_dependencies | default(false) | bool
+
+- name: Clear stale apt/dpkg lock holders
+  shell: |
+    set -euo pipefail
+    for proc in apt-get apt apt.systemd.daily unattended-upgrade dpkg; do
+      pkill -x "$proc" || true
+    done
+    rm -f /var/lib/apt/lists/lock /var/cache/apt/archives/lock /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock
+    dpkg --configure -a || true
+  args:
+    executable: /bin/bash
+  when: install_lab_dependencies | default(false) | bool
+
+- name: Refresh apt cache with retries
+  shell: |
+    set -euo pipefail
+    export DEBIAN_FRONTEND=noninteractive
+    timeout 600 apt-get update -y
+  args:
+    executable: /bin/bash
+  register: apt_update_result
+  changed_when: false
+  until: apt_update_result.rc == 0
+  retries: 4
+  delay: 10
+  when: install_lab_dependencies | default(false) | bool
+
+- name: Install lab dependencies
+  shell: |
+    set -euo pipefail
+    export DEBIAN_FRONTEND=noninteractive
+    timeout 900 apt-get install -y --no-install-recommends --no-upgrade \
+      python3 python3-pip python3-venv jq gdisk parted dosfstools e2fsprogs util-linux rsync
+  args:
+    executable: /bin/bash
+  when: install_lab_dependencies | default(false) | bool
+
+- name: Create fixture root
+  file:
+    path: "{{ fixture_mount_root }}"
+    state: directory
+    mode: '0755'
