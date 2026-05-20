@@ -51,5 +51,8 @@ done
 curl -fsSL -o "$APPIMAGE_TOOL" https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
 chmod +x "$APPIMAGE_TOOL"
 ARCH=x86_64 "$APPIMAGE_TOOL" --appimage-extract-and-run "$APPDIR" "$DIST_DIR/$APPIMAGE_NAME"
-sha256sum "$DIST_DIR/$APPIMAGE_NAME" > "$DIST_DIR/$APPIMAGE_NAME.sha256"
+(
+  cd "$DIST_DIR"
+  sha256sum "$APPIMAGE_NAME" > "$APPIMAGE_NAME.sha256"
+)
 printf '%s\n' "$DIST_DIR/$APPIMAGE_NAME"
