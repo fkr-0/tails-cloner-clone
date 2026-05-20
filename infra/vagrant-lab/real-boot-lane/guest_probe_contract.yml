@@ -1,0 +1,91 @@
+version: 1
+contract: tails_guest_readiness_probe
+status: planned
+purpose:
+  - define the minimum in-guest facts needed before a real-boot scenario can be marked implemented
+  - keep QEMU orchestration separate from Tails guest instrumentation
+  - provide a stable output schema for future serial, SSH, or injected-script probes
+transport_candidates:
+  serial_marker:
+    status: preferred_first
+    rationale: simplest headless signal if a guest-side command can be injected or run manually
+    output_format: line-delimited JSON prefixed with TAILS_CLONER_GUEST_PROBE=
+  ssh_after_boot:
+    status: candidate
+    rationale: useful if networking and credentials can be prepared safely in a disposable/snapshot guest
+    output_format: JSON written by guest probe script
+  qemu_guest_agent:
+    status: candidate
+    rationale: structured host/guest communication, but requires guest support/injection
+    output_format: QMP guest-exec result JSON
+required_output_schema:
+  transport: string
+  timestamp_utc: string
+  scenario_variant: string
+  live_version_path:
+    path: /lib/live/mount/medium/live/Tails.version
+    exists: bool
+    content: string
+  running_tails_detection:
+    is_running_tails: bool
+    running_tails_version: string
+    running_tails_device: string
+    running_tails_size_bytes: integer
+  block_devices:
+    source_parent_disk: string
+    target_candidates:
+      - path: string
+        has_tails: bool
+        excluded_because_source: bool
+  fsuuid_boot:
+    proc_cmdline: string
+    fsuuid: string
+    fsuuid_resolution:
+      exists: bool
+      resolved: string
+      parent_disk: string
+    live_medium:
+      mount_source: string
+      mount_source_parent_disk: string
+    tails_media_devices:
+      - path: string
+        parent_disk: string
+        label: string
+        uuid: string
+    live_medium_matches_fsuuid: bool
+  project_access:
+    checkout_visible: bool
+    python_import_tails_cloner: bool
+variant_requirements:
+  running-live-install:
+    must_prove:
+      - live_version_path.exists is true
+      - running_tails_detection.is_running_tails is true
+      - running_tails_detection.running_tails_device is not empty
+      - source parent disk is excluded from target candidates
+  outdated-running-iso-upgrade:
+    must_prove:
+      - live_version_path.exists is true
+      - running_tails_detection.is_running_tails is true
+      - newer cached image is visible inside guest
+      - persistent target disk is visible inside guest
+  outdated-running-source-device-upgrade:
+    must_prove:
+      - live_version_path.exists is true
+      - running_tails_detection.is_running_tails is true
+      - newer attached source disk is visible inside guest
+      - persistent target disk is visible inside guest
+      - booted controller source is distinct from newer attached source
+  fsuuid-two-valid-media:
+    must_prove:
+      - live_version_path.exists is true
+      - running_tails_detection.is_running_tails is true
+      - fsuuid_boot.fsuuid is not empty
+      - fsuuid_boot.fsuuid_resolution.exists is true
+      - at least two TAILS-like media are visible
+      - fsuuid_boot.live_medium_matches_fsuuid is true
+completion_gate:
+  implemented_status_requires:
+    - qmp_probe.success is true
+    - guest_probe_output satisfies required_output_schema
+    - all variant-specific must_prove items are satisfied

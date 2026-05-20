@@ -1,0 +1,68 @@
+version: 1
+purpose:
+  - define the host-side capture command shape for each real-boot scenario variant
+  - keep guest execution separate from command construction and evidence recording
+  - make variant attachment roles explicit
+variants:
+  running-live-install:
+    scenario_ref: install.running_live_iso_usb
+    todo_ref: E2E-001
+    capture_args:
+      scenario_variant: running-live-install
+      version_role: current_tails_img
+      prepare_share: true
+      interactive_display: true
+      serial_log: infra/vagrant-lab/real-boot-lane/out/serial-logs/running-live-install.log
+      extra_attachment_roles: []
+    guest_step: run the printed guest_command inside the booted Tails session
+    recorder_args:
+      log_file: infra/vagrant-lab/real-boot-lane/out/serial-logs/running-live-install.log
+      mark_done: true
+  outdated-running-iso-upgrade:
+    scenario_ref: upgrade.outdated_running_tails.source_iso_on_disc
+    todo_ref: E2E-004
+    capture_args:
+      scenario_variant: outdated-running-iso-upgrade
+      version_role: outdated_controller_img
+      prepare_share: true
+      interactive_display: true
+      serial_log: infra/vagrant-lab/real-boot-lane/out/serial-logs/outdated-running-iso-upgrade.log
+      extra_attachment_roles:
+        - newer_img_on_disc
+        - persistent_target_media
+    guest_step: run the printed guest_command inside the old booted Tails session and collect the marker
+    recorder_args:
+      log_file: infra/vagrant-lab/real-boot-lane/out/serial-logs/outdated-running-iso-upgrade.log
+      mark_done: true
+  outdated-running-source-device-upgrade:
+    scenario_ref: upgrade.outdated_running_tails.source_not_running_live_iso_usb
+    todo_ref: E2E-005
+    capture_args:
+      scenario_variant: outdated-running-source-device-upgrade
+      version_role: outdated_controller_img
+      prepare_share: true
+      interactive_display: true
+      serial_log: infra/vagrant-lab/real-boot-lane/out/serial-logs/outdated-running-source-device-upgrade.log
+      extra_attachment_roles:
+        - newer_attached_source_media
+        - persistent_target_media
+    guest_step: run the printed guest_command inside the old booted Tails session and collect the marker
+    recorder_args:
+      log_file: infra/vagrant-lab/real-boot-lane/out/serial-logs/outdated-running-source-device-upgrade.log
+      mark_done: true
+attachment_roles:
+  current_tails_img:
+    value_kind: cached_version
+    description: cached current Tails IMG used as the running-live controller image
+  outdated_controller_img:
+    value_kind: cached_version
+    description: cached older Tails IMG used as the running outdated controller image
+  newer_img_on_disc:
+    value_kind: media_path
+    description: newer Tails IMG visible to the guest for the on-disc source variant
+  newer_attached_source_media:
+    value_kind: media_path
+    description: newer Tails-like source medium attached to the guest but not booted
+  persistent_target_media:
+    value_kind: media_path
+    description: existing Tails target medium with a marker that must still be present after the scenario

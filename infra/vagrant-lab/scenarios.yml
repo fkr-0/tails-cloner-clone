@@ -1,0 +1,947 @@
+version: 1
+status_legend:
+  implemented: exercised by default e2e or focused lab command
+  partial: modeled by dry-run or synthetic fixture, but not full real boot/device flow
+  planned: documented target with no executable assertion yet
+  blocked: needs real Tails boot/source support or GUI automation
+cases:
+  install.running_live_iso_usb:
+    group: install
+    title: Cloner launched from running Tails live USB
+    desired_flow: running Tails live USB -> install to another target device
+    current_status: partial
+    current_coverage:
+    - source detection exists in src/tails_cloner/source.py
+    - controller can resolve running Tails embedded ISO when present
+    - Vagrant lab does not currently boot the controller as Tails
+    - real-boot-lane/lane.yml documents the QEMU real-boot acceptance and safety model
+    - real-boot-lane/boot_matrix.yml now defines a concrete QEMU preflight variant for this case
+    - real-boot-lane/preflight_real_boot_lane.py validates lane metadata and prints non-executing boot plans
+    - boot_tails_qemu.sh supports --dry-run, --headless, --timeout, --extra-drive, and --no-network
+    - test_real_boot_lane.py guards snapshot-mode, non-destructive real-boot preflight plans
+    - smoke_qemu_launch.py performs a bounded headless QEMU launch against cached Tails images
+    - bounded QEMU smoke passed for tails-amd64-7.7.2.img under TCG fallback until timeout
+    - boot_tails_qemu.sh now defaults to CPU model max for KVM/TCG portability
+    - boot_tails_qemu.sh supports QMP control socket and pidfile options
+    - probe_qemu_qmp.py starts QEMU, connects to QMP, queries status/block devices, and exits cleanly through QMP quit
+    - QMP probe passed for tails-amd64-7.7.2.img and reported VM status running with block devices visible
+    - guest_probe_contract.yml defines the required in-guest readiness schema and per-variant proof gates
+    - preflight_real_boot_lane.py now validates guest_probe_contract.yml together with the boot matrix
+    - test_real_boot_lane.py ensures real-boot variants cannot be considered complete without qmp_probe.success and guest_probe_output
+      gates
+    - guest_probe.py emits the guest_probe_output schema from inside a booted guest or synthetic test environment
+    - guest_probe.py supports serial-marker output prefixed with TAILS_CLONER_GUEST_PROBE=
+    - test_guest_probe.py validates live version detection, project visibility, source parent disk reporting, and missing-live-version
+      failure state
+    - validate_guest_probe_output.py validates raw JSON or serial-marker guest probe output against the real-boot contract
+    - validator enforces schema, variant support, live-version proof, running-Tails proof, project visibility, and source-target
+      exclusion/visibility gates
+    - test_validate_guest_probe_output.py covers accepted JSON, accepted serial logs, missing live version, unknown variants,
+      and missing marker failure
+    - boot_tails_qemu.sh supports --serial-log for capturing TAILS_CLONER_GUEST_PROBE output
+    - boot_tails_qemu.sh supports read-only --share-dir PATH,TAG via virtio-9p for guest probe/project injection
+    - test_real_boot_lane.py validates serial-log and read-only share dry-run launcher behavior
+    - capture_guest_probe_from_qemu.py boots with QMP, serial log, read-only share, waits for guest marker, validates it,
+      and shuts QEMU down
+    - test_real_boot_lane.py validates capture runner dry-run command construction for serial/share/QMP/pidfile
+    - prepare_guest_probe_share.py builds a read-only 9p share bundle containing guest_probe.py, run_guest_probe.sh, README,
+      and a minimal project import marker
+    - run_guest_probe.sh mounts the 9p share inside Tails and emits TAILS_CLONER_GUEST_PROBE through the guest serial device
+    - test_real_boot_lane.py validates the generated guest probe share bundle and command content
+    - capture_guest_probe_from_qemu.py supports --interactive-display for manual graphical Tails sessions while still capturing
+      serial/QMP evidence
+    - capture_guest_probe_from_qemu.py supports --prepare-share to auto-build the guest-probe 9p share before launch
+    - capture runner JSON includes the exact guest command to mount the share and run run_guest_probe.sh
+    - record_guest_probe_evidence.py validates a captured serial marker and records evidence into scenarios.yml/todos.yml
+    - record_guest_probe_evidence.py can promote the matching real-boot scenario/TODO with --mark-done after validation
+    - test_validate_guest_probe_output.py covers recorder dry-run mapping from running-live-install to install.running_live_iso_usb
+      and E2E-001
+    - capture_session_matrix.yml defines variant-specific capture arguments and attachment roles
+    - plan_capture_session.py emits concrete capture_command, guest_step, and record_command for this real-boot variant
+    - test_real_boot_lane.py validates variant-specific capture planning including extra attachments for outdated-running
+      source-device flow
+    - resolve_capture_roles.py discovers cached Tails image versions and resolves capture-session version roles
+    - resolve_capture_roles.py reports missing media-role mappings before a real capture session is attempted
+    - resolve_capture_roles.py can emit a full capture-session plan when roles are complete
+    - capture_session_matrix.yml classifies role values as cached_version or media_path
+    - resolve_capture_roles.py reports media_path_status and missing_media_paths for capture attachments
+    - resolve_capture_roles.py supports --require-existing-media to fail before QEMU launch when media paths are missing
+    - report_capture_readiness.py summarizes readiness for all real-boot capture variants
+    - report_capture_readiness.py can enforce strict media-path existence across the capture matrix
+    - test_real_boot_lane.py validates readiness reporting for ready and blocked variants
+    - emit_capture_runbook.py writes a runnable shell runbook for READY capture variants
+    - runbook contains capture command, guest-step instructions, and record command
+    - test_real_boot_lane.py validates runbook generation for running-live-install
+    - generated capture runbooks now support print, capture, and record actions with print as safe default
+    - running-live-install runbook passes bash syntax check and print-mode smoke validation
+    - plan_capture_session.py emits an exact guest_command for mounting the 9p share and running run_guest_probe.sh
+    - generated capture runbooks print the exact copy-paste guest command before capture
+    - running-live-install runbook print mode verifies the guest command appears in instructions
+    - prepare_all_capture_runbooks.py prepares media, verifies strict readiness, and emits all real-boot capture runbooks
+      in one command
+    - test_real_boot_lane.py validates prepare_all_capture_runbooks.py emits all three variant runbooks
+    - prepare_all_capture_runbooks.py writes an operator README next to generated capture runbooks
+    - operator README documents print/capture/record runtime sequence for all three real-boot variants
+    - test_real_boot_lane.py validates the operator README contains all variant commands
+    - report_capture_evidence.py reports missing/valid/invalid guest serial marker evidence for all real-boot variants
+    - report_capture_evidence.py can run strict with --require-all-valid for CI/operator gating
+    - test_real_boot_lane.py validates report_capture_evidence.py with a synthetic valid marker override
+    - report_prepared_capture_readiness.py reports strict readiness using the default prepared media paths without creating
+      files
+    - bridge command real-boot-readiness now uses report_prepared_capture_readiness.py --require-all-ready
+    - test_real_boot_lane.py validates prepared readiness after prepare_all_capture_runbooks.py
+    - bridge.yml now exposes real-boot-validate-local for local script/test validation without starting QEMU/Tails
+    - bridge.yml command arrays are formatted as inline YAML arrays and accepted by the project bridge parser
+    - project bridge parser validation confirms real-boot bridge commands are discoverable
+    - bridge real-boot-validate-local was executed through the project command runner and passed 28 focused tests
+    - bridge real-boot-readme prints the generated operator README through the project command runner
+    - real-boot README command is available as a bridge-level operator entrypoint
+    - report_real_boot_state.py combines readiness, evidence status, runbook paths, and next actions for all real-boot variants
+    - bridge real-boot-state was executed through the project command runner and reports 3/3 ready with 0/3 evidence valid
+    - real-boot-state makes the remaining runtime guest evidence gap explicit per variant
+    - test_real_boot_lane.py covers report_real_boot_state.py after prepare_all_capture_runbooks.py
+    - bridge real-boot-validate-local now passes 29 focused real-boot tests through run_project_command
+    - report_real_boot_state.py regression validates 3/3 readiness, runbook existence, README existence, and per-variant next
+      actions
+    - report_real_boot_preflight.py checks host tools, cached images, prepared media, runbooks, README, display hints, and
+      KVM hints before capture attempts
+    - test_real_boot_lane.py covers report_real_boot_preflight.py after prepare_all_capture_runbooks.py
+    - bridge real-boot-preflight exposes preflight as an operator command
+    - bridge real-boot-preflight executed through run_project_command and reports ready_for_attempt true
+    - preflight confirmed QEMU, timeout, python3, parted, mkfs.vfat, and mcopy are available
+    - preflight confirmed cached images, prepared media, executable runbooks, operator README, display hint, and KVM access
+      are present
+    - next_real_boot_action.py selects the next variant missing valid evidence and prints concrete print/capture/record commands
+    - test_real_boot_lane.py covers next_real_boot_action.py for default and explicit variant selection
+    - bridge real-boot-next executed through run_project_command and selects running-live-install/E2E-001 as the next runtime
+      action
+    - bridge exposes variant-specific next-action shortcuts for install and both outdated-running upgrade variants
+    - bridge real-boot-validate-local now reports 32 focused tests passed via run_project_command
+    - variant-specific next-action bridge shortcuts were smoke-tested for E2E-004 and E2E-005
+    - capture_session_matrix.yml now stores serial evidence logs under infra/vagrant-lab/real-boot-lane/out/serial-logs instead
+      of /tmp
+    - prepare_all_capture_runbooks.py regenerated all runbooks with persistent serial-log paths
+    - focused e2e suite confirms matrix/runbooks contain no stale /tmp/tails-guest-probe paths
+    - prepare_all_capture_runbooks.py creates infra/vagrant-lab/real-boot-lane/out/serial-logs during setup
+    - prepare_all_capture_runbooks.py now includes serial_log_dir in its JSON output
+    - test_real_boot_lane.py validates prepare_all_capture_runbooks.py creates serial_log_dir
+    - report_real_boot_artifacts.py inventories cached Tails images, capture media, generated runbooks, README, and serial-log
+      targets
+    - test_real_boot_lane.py covers report_real_boot_artifacts.py after prepare_all_capture_runbooks.py
+    - bridge real-boot-artifacts executed through run_project_command and reports ready_for_capture_attempt true with serial
+      logs still absent
+    - infra/vagrant-lab/real-boot-lane/OPERATOR.md documents the bridge workflow and persistent artifact locations
+    - test_real_boot_lane.py validates OPERATOR.md lists real-boot bridge commands and persistent serial-log paths
+    - bridge manifest parser confirms real-boot commands including real-boot-artifacts are discoverable
+    - bridge real-boot-operator prints the stable OPERATOR.md guide through run_project_command
+    - real-boot-operator complements generated real-boot-readme by documenting persistent artifacts and bridge workflow
+    - bridge real-boot-validate-local now reports 34 focused tests passed via run_project_command
+    - snapshot_real_boot_status.py writes persistent JSON and Markdown status snapshots under real-boot-lane/out/status-snapshots
+    - test_real_boot_lane.py covers snapshot_real_boot_status.py and validates all three next-action sections
+    - bridge real-boot-snapshot executed through run_project_command and reports 3/3 ready with 0/3 valid evidence
+    - bundle_real_boot_evidence.py creates tar.gz bundles of persistent real-boot artifacts and snapshots
+    - bundle_real_boot_evidence.py has strict mode that fails with stdout JSON until all expected serial logs exist
+    - bridge real-boot-bundle executed through run_project_command and created latest.tar.gz plus latest.manifest.json
+    - test_real_boot_lane.py covers non-strict and strict evidence bundling behavior
+    - OPERATOR.md documents real-boot-snapshot, real-boot-bundle, and real-boot-bundle-strict workflows
+    - test_real_boot_lane.py validates OPERATOR.md lists snapshot and bundle commands plus persistent artifact paths
+    - focused real-boot suite reports 37 tests passed after snapshot/bundle/operator documentation updates
+    default_e2e: false
+    next_step: perform booted-Tails runtime capture, refresh real-boot-snapshot, then run real-boot-bundle-strict
+    todo_refs:
+    - E2E-001
+    real_boot_lane: infra/vagrant-lab/real-boot-lane/lane.yml
+    real_boot_variant: running-live-install
+    real_boot_preflight: infra/vagrant-lab/real-boot-lane/preflight_real_boot_lane.py --json
+    qemu_smoke:
+      date: '2026-05-20'
+      image: tails-amd64-7.7.2.img
+      version: 7.7.2
+      returncode: 124
+      success: true
+      timeout_seconds: 20
+      result: QEMU accepted the image and stayed alive until bounded timeout; this is launcher smoke, not full in-guest readiness
+        proof
+      stderr_tail: 'qemu-system-x86_64: ioctl(KVM_CREATE_VM) failed: Input/output error
+
+        qemu-system-x86_64: failed to initialize kvm: Input/output error
+
+        qemu-system-x86_64: falling back to tcg
+
+        qemu-system-x86_64: terminating on signal 15 from pid 590804 (timeout)
+
+        '
+    qmp_probe:
+      date: '2026-05-20'
+      image: tails-amd64-7.7.2.img
+      version: 7.7.2
+      returncode: 0
+      success: true
+      qmp_connected: true
+      qmp_status: &id001
+        return:
+          running: true
+          status: running
+      qmp_kvm: &id002
+        return:
+          enabled: false
+          present: true
+      block_count: 2
+      result: QEMU exposed QMP, reported running status and block devices, then accepted QMP quit; still not full in-guest
+        Tails readiness proof
+    guest_probe_contract: infra/vagrant-lab/real-boot-lane/guest_probe_contract.yml
+    guest_probe_script: infra/vagrant-lab/real-boot-lane/guest_probe.py
+    guest_probe_validator: infra/vagrant-lab/real-boot-lane/validate_guest_probe_output.py
+    guest_probe_injection_path: boot_tails_qemu.sh --share-dir <repo-or-probe-dir>,tailscloner --serial-log <serial.log>
+    guest_probe_capture_runner: infra/vagrant-lab/real-boot-lane/capture_guest_probe_from_qemu.py
+    guest_probe_share_builder: infra/vagrant-lab/real-boot-lane/prepare_guest_probe_share.py
+    guest_probe_guest_command: sudo mount -t 9p -o trans=virtio,version=9p2000.L,ro tailscloner /mnt/tailscloner && /mnt/tailscloner/run_guest_probe.sh
+    manual_capture_command: python3 infra/vagrant-lab/real-boot-lane/capture_guest_probe_from_qemu.py --version 7.7.2 --scenario-variant
+      running-live-install --interactive-display --prepare-share --serial-log /tmp/tails-guest-probe.log
+    guest_probe_evidence_recorder: infra/vagrant-lab/real-boot-lane/record_guest_probe_evidence.py
+    record_evidence_command: python3 infra/vagrant-lab/real-boot-lane/record_guest_probe_evidence.py --log-file /tmp/tails-guest-probe.log
+      --mark-done
+    capture_session_matrix: infra/vagrant-lab/real-boot-lane/capture_session_matrix.yml
+    capture_session_planner: infra/vagrant-lab/real-boot-lane/plan_capture_session.py
+    capture_session_variant: running-live-install
+    capture_role_resolver: infra/vagrant-lab/real-boot-lane/resolve_capture_roles.py
+    resolve_roles_command: python3 infra/vagrant-lab/real-boot-lane/resolve_capture_roles.py --variant running-live-install
+      --emit-plan
+    strict_resolve_roles_command: python3 infra/vagrant-lab/real-boot-lane/resolve_capture_roles.py --variant running-live-install
+      --emit-plan --require-existing-media
+    capture_readiness_reporter: infra/vagrant-lab/real-boot-lane/report_capture_readiness.py
+    capture_readiness_command: python3 infra/vagrant-lab/real-boot-lane/report_capture_readiness.py --require-existing-media
+    capture_runbook_emitter: infra/vagrant-lab/real-boot-lane/emit_capture_runbook.py
+    capture_runbook: /home/user/code/tails-cloner/infra/vagrant-lab/real-boot-lane/out/capture-runbooks/running-live-install.sh
+    capture_runbook_actions:
+      print: show instructions and commands without starting QEMU
+      capture: execute capture_guest_probe_from_qemu.py for this variant
+      record: execute record_guest_probe_evidence.py for the captured serial log
+    guest_command_copy_paste: sudo mkdir -p /mnt/tailscloner && sudo mount -t 9p -o trans=virtio,version=9p2000.L,ro tailscloner
+      /mnt/tailscloner && /mnt/tailscloner/run_guest_probe.sh
+    prepare_all_capture_runbooks: infra/vagrant-lab/real-boot-lane/prepare_all_capture_runbooks.py --force
+    strict_capture_readiness:
+      ready_count: 3
+      total_count: 3
+      all_ready: true
+    capture_operator_readme: /home/user/code/tails-cloner/infra/vagrant-lab/real-boot-lane/out/capture-runbooks/README.md
+    capture_evidence_reporter: infra/vagrant-lab/real-boot-lane/report_capture_evidence.py
+    capture_evidence_command: python3 infra/vagrant-lab/real-boot-lane/report_capture_evidence.py --require-all-valid
+    prepared_capture_readiness_reporter: infra/vagrant-lab/real-boot-lane/report_prepared_capture_readiness.py
+    bridge_real_boot_readiness: real-boot-readiness
+    bridge_real_boot_validate_local: real-boot-validate-local
+    bridge_real_boot_readme: real-boot-readme
+    bridge_real_boot_validate_local_verified: true
+    bridge_real_boot_state: real-boot-state
+    last_real_boot_state:
+      ready: 3/3
+      valid_evidence: 0/3
+      remaining: run capture, paste guest command inside Tails, run record
+    bridge_real_boot_validate_local_last_result: 37 passed
+    bridge_real_boot_preflight: real-boot-preflight
+    bridge_real_boot_preflight_verified:
+      ready_for_attempt: true
+      cached_images: 2
+      tools_ready: true
+      media_ready: true
+      runbooks_ready: true
+      display_hint_available: true
+      kvm_access: true
+    bridge_real_boot_next: real-boot-next
+    next_runtime_action:
+      variant: running-live-install
+      status: ready_for_runtime_capture
+      evidence: missing_log
+      command: real-boot-next
+    bridge_real_boot_next_variant: real-boot-next-install
+    persistent_serial_log: infra/vagrant-lab/real-boot-lane/out/serial-logs/running-live-install.log
+    serial_log_dir_prepared_by_setup: infra/vagrant-lab/real-boot-lane/out/serial-logs
+    bridge_real_boot_artifacts: real-boot-artifacts
+    last_real_boot_artifacts:
+      ready_for_capture_attempt: true
+      tails_images_present: true
+      capture_media_present: true
+      runbooks_present: true
+      operator_readme_present: true
+      serial_log_dir_present: true
+      serial_logs_present: false
+    operator_doc: infra/vagrant-lab/real-boot-lane/OPERATOR.md
+    bridge_real_boot_operator: real-boot-operator
+    bridge_real_boot_snapshot: real-boot-snapshot
+    status_snapshot:
+      json: infra/vagrant-lab/real-boot-lane/out/status-snapshots/latest.json
+      markdown: infra/vagrant-lab/real-boot-lane/out/status-snapshots/latest.md
+      ready: 3/3
+      valid_evidence: 0/3
+      serial_logs_present: false
+    bridge_real_boot_bundle: real-boot-bundle
+    bridge_real_boot_bundle_strict: real-boot-bundle-strict
+    evidence_bundle:
+      latest_archive: infra/vagrant-lab/real-boot-lane/out/evidence-bundles/latest.tar.gz
+      latest_manifest: infra/vagrant-lab/real-boot-lane/out/evidence-bundles/latest.manifest.json
+      strict_ready: false
+      reason: expected runtime serial logs are not present yet
+    operator_doc_covers_bundles: true
+  install.not_running_live_iso_usb:
+    group: install
+    title: Cloner launched with not-running Tails live USB as source
+    desired_flow: any launcher system -> select attached non-running Tails USB/source -> install to target
+    current_status: implemented
+    current_coverage:
+    - Vagrant fixture creates source_disk labeled TAILS_SRC
+    - source_disk contains live/Tails.version to model a not-running Tails live USB source
+    - dry-run-source-device-install validates source and target are distinct block devices
+    - dry-run-source-device-install prints a whole-source-device to whole-target-device dd plan without writing
+    - optional destructive-source-device-install-validate copies source_disk to target_extra_disk when explicitly gated
+    - post-write validation checks copied TAILS_SRC label and live/Tails.version on target
+    default_e2e: true
+    command: sudo TAILS_CLONER_LAB_ALLOW_DESTRUCTIVE=1 PYTHONPATH=src python3 infra/vagrant-lab/scripts/run_lab_scenario.py
+      destructive-source-device-install-validate --target extra
+    next_step: keep as optional destructive source-device install e2e; prefer running the dry-run by default and this validation
+      in full lab runs
+    verified:
+      date: '2026-05-20'
+      environment: vagrant controller
+      command: sudo TAILS_CLONER_LAB_ALLOW_DESTRUCTIVE=1 PYTHONPATH=src python3 infra/vagrant-lab/scripts/run_lab_scenario.py
+        destructive-source-device-install-validate --target extra
+      result: copy command exceeded outer timeout, but post-write validation passed; target_extra_disk copied TAILS_SRC label
+        and live/Tails.version from source_disk
+      source_disk: /dev/sdb
+      source_partition: /dev/sdb1
+      target_disk: /dev/sde
+      target_partition: /dev/sde1
+      target_label: TAILS_SRC
+      target_live_version: 7.7.2-fixture-source
+  install.any_linux_download_to_disc:
+    group: install
+    title: Cloner launched from any Linux, download image, then install from local disk
+    desired_flow: Linux host -> download Tails IMG -> local cached image -> install target
+    current_status: implemented
+    current_coverage:
+    - tails_artifacts role downloads pinned IMG artifacts into persistent host-synced cache
+    - dry-run install uses cached local IMG path
+    - optional destructive-install-validate writes cached IMG to target_extra_disk when explicitly gated
+    - post-write validation checks the target has partitions, a vfat system partition, and no persistence partition
+    default_e2e: optional
+    command: sudo TAILS_CLONER_LAB_ALLOW_DESTRUCTIVE=1 PYTHONPATH=src python3 infra/vagrant-lab/scripts/run_lab_scenario.py
+      destructive-install-validate --target extra --version 7.7.2
+    next_step: keep as optional destructive e2e or schedule it only for pre-release/full lab validation runs
+    verified:
+      date: '2026-05-19'
+      environment: vagrant controller
+      command: sudo TAILS_CLONER_LAB_ALLOW_DESTRUCTIVE=1 PYTHONPATH=src python3 infra/vagrant-lab/scripts/run_lab_scenario.py
+        destructive-install-validate --target extra --version 7.7.2
+      result: passed; target_extra_disk had TAILS vfat system partition and no persistence partition
+  upgrade.outdated_running_tails.source_not_running_live_iso_usb:
+    group: upgrade_with_persistence
+    title: Outdated running Tails upgrades from a not-running live USB source
+    desired_flow: outdated running Tails target/controller -> newer attached Tails USB source -> upgrade target system partition
+      only
+    persistence_required: true
+    current_status: planned
+    current_coverage:
+    - persistence-preserving upgrader primitive exists
+    - no running-outdated-Tails controller fixture yet
+    - real-boot-lane/boot_matrix.yml now defines a concrete QEMU preflight variant for this case
+    - real-boot-lane/preflight_real_boot_lane.py validates lane metadata and prints non-executing boot plans
+    - boot_tails_qemu.sh supports --dry-run, --headless, --timeout, --extra-drive, and --no-network
+    - test_real_boot_lane.py guards snapshot-mode, non-destructive real-boot preflight plans
+    - smoke_qemu_launch.py performs a bounded headless QEMU launch against cached Tails images
+    - bounded QEMU smoke passed for tails-amd64-7.7.2.img under TCG fallback until timeout
+    - boot_tails_qemu.sh now defaults to CPU model max for KVM/TCG portability
+    - boot_tails_qemu.sh supports QMP control socket and pidfile options
+    - probe_qemu_qmp.py starts QEMU, connects to QMP, queries status/block devices, and exits cleanly through QMP quit
+    - QMP probe passed for tails-amd64-7.7.2.img and reported VM status running with block devices visible
+    - guest_probe_contract.yml defines the required in-guest readiness schema and per-variant proof gates
+    - preflight_real_boot_lane.py now validates guest_probe_contract.yml together with the boot matrix
+    - test_real_boot_lane.py ensures real-boot variants cannot be considered complete without qmp_probe.success and guest_probe_output
+      gates
+    - guest_probe.py emits the guest_probe_output schema from inside a booted guest or synthetic test environment
+    - guest_probe.py supports serial-marker output prefixed with TAILS_CLONER_GUEST_PROBE=
+    - test_guest_probe.py validates live version detection, project visibility, source parent disk reporting, and missing-live-version
+      failure state
+    - validate_guest_probe_output.py validates raw JSON or serial-marker guest probe output against the real-boot contract
+    - validator enforces schema, variant support, live-version proof, running-Tails proof, project visibility, and source-target
+      exclusion/visibility gates
+    - test_validate_guest_probe_output.py covers accepted JSON, accepted serial logs, missing live version, unknown variants,
+      and missing marker failure
+    - boot_tails_qemu.sh supports --serial-log for capturing TAILS_CLONER_GUEST_PROBE output
+    - boot_tails_qemu.sh supports read-only --share-dir PATH,TAG via virtio-9p for guest probe/project injection
+    - test_real_boot_lane.py validates serial-log and read-only share dry-run launcher behavior
+    - capture_guest_probe_from_qemu.py boots with QMP, serial log, read-only share, waits for guest marker, validates it,
+      and shuts QEMU down
+    - test_real_boot_lane.py validates capture runner dry-run command construction for serial/share/QMP/pidfile
+    - prepare_guest_probe_share.py builds a read-only 9p share bundle containing guest_probe.py, run_guest_probe.sh, README,
+      and a minimal project import marker
+    - run_guest_probe.sh mounts the 9p share inside Tails and emits TAILS_CLONER_GUEST_PROBE through the guest serial device
+    - test_real_boot_lane.py validates the generated guest probe share bundle and command content
+    - capture_guest_probe_from_qemu.py supports --interactive-display for manual graphical Tails sessions while still capturing
+      serial/QMP evidence
+    - capture_guest_probe_from_qemu.py supports --prepare-share to auto-build the guest-probe 9p share before launch
+    - capture runner JSON includes the exact guest command to mount the share and run run_guest_probe.sh
+    - record_guest_probe_evidence.py validates a captured serial marker and records evidence into scenarios.yml/todos.yml
+    - record_guest_probe_evidence.py can promote the matching real-boot scenario/TODO with --mark-done after validation
+    - test_validate_guest_probe_output.py covers recorder dry-run mapping from running-live-install to install.running_live_iso_usb
+      and E2E-001
+    - capture_session_matrix.yml defines variant-specific capture arguments and attachment roles
+    - plan_capture_session.py emits concrete capture_command, guest_step, and record_command for this real-boot variant
+    - test_real_boot_lane.py validates variant-specific capture planning including extra attachments for outdated-running
+      source-device flow
+    - resolve_capture_roles.py discovers cached Tails image versions and resolves capture-session version roles
+    - resolve_capture_roles.py reports missing media-role mappings before a real capture session is attempted
+    - resolve_capture_roles.py can emit a full capture-session plan when roles are complete
+    - capture_session_matrix.yml classifies role values as cached_version or media_path
+    - resolve_capture_roles.py reports media_path_status and missing_media_paths for capture attachments
+    - resolve_capture_roles.py supports --require-existing-media to fail before QEMU launch when media paths are missing
+    - report_capture_readiness.py summarizes readiness for all real-boot capture variants
+    - report_capture_readiness.py can enforce strict media-path existence across the capture matrix
+    - test_real_boot_lane.py validates readiness reporting for ready and blocked variants
+    - emit_capture_runbook.py writes a runnable shell runbook for READY capture variants
+    - runbook contains capture command, guest-step instructions, and record command
+    - test_real_boot_lane.py validates runbook generation for running-live-install
+    - generated capture runbooks now support print, capture, and record actions with print as safe default
+    - running-live-install runbook passes bash syntax check and print-mode smoke validation
+    - plan_capture_session.py emits an exact guest_command for mounting the 9p share and running run_guest_probe.sh
+    - generated capture runbooks print the exact copy-paste guest command before capture
+    - running-live-install runbook print mode verifies the guest command appears in instructions
+    - prepare_capture_media.py creates local media-path role files for outdated-running real-boot planning
+    - prepare_capture_media.py emits role mappings for newer_img_on_disc, newer_attached_source_media, and persistent_target_media
+    - test_real_boot_lane.py validates prepare_capture_media.py with throwaway small media files
+    - prepare_capture_media.py produced concrete reusable media role files under .cache/vagrant-lab/capture-media
+    - strict report_capture_readiness.py reports all three real-boot capture variants READY when generated media roles are
+      supplied
+    - capture runbook emitted for outdated-running-source-device-upgrade
+    - prepare_all_capture_runbooks.py prepares media, verifies strict readiness, and emits all real-boot capture runbooks
+      in one command
+    - test_real_boot_lane.py validates prepare_all_capture_runbooks.py emits all three variant runbooks
+    - prepare_all_capture_runbooks.py writes an operator README next to generated capture runbooks
+    - operator README documents print/capture/record runtime sequence for all three real-boot variants
+    - test_real_boot_lane.py validates the operator README contains all variant commands
+    - report_capture_evidence.py reports missing/valid/invalid guest serial marker evidence for all real-boot variants
+    - report_capture_evidence.py can run strict with --require-all-valid for CI/operator gating
+    - test_real_boot_lane.py validates report_capture_evidence.py with a synthetic valid marker override
+    - report_prepared_capture_readiness.py reports strict readiness using the default prepared media paths without creating
+      files
+    - bridge command real-boot-readiness now uses report_prepared_capture_readiness.py --require-all-ready
+    - test_real_boot_lane.py validates prepared readiness after prepare_all_capture_runbooks.py
+    - bridge.yml now exposes real-boot-validate-local for local script/test validation without starting QEMU/Tails
+    - bridge.yml command arrays are formatted as inline YAML arrays and accepted by the project bridge parser
+    - project bridge parser validation confirms real-boot bridge commands are discoverable
+    - bridge real-boot-validate-local was executed through the project command runner and passed 28 focused tests
+    - bridge real-boot-readme prints the generated operator README through the project command runner
+    - real-boot README command is available as a bridge-level operator entrypoint
+    - report_real_boot_state.py combines readiness, evidence status, runbook paths, and next actions for all real-boot variants
+    - bridge real-boot-state was executed through the project command runner and reports 3/3 ready with 0/3 evidence valid
+    - real-boot-state makes the remaining runtime guest evidence gap explicit per variant
+    - test_real_boot_lane.py covers report_real_boot_state.py after prepare_all_capture_runbooks.py
+    - bridge real-boot-validate-local now passes 29 focused real-boot tests through run_project_command
+    - report_real_boot_state.py regression validates 3/3 readiness, runbook existence, README existence, and per-variant next
+      actions
+    - report_real_boot_preflight.py checks host tools, cached images, prepared media, runbooks, README, display hints, and
+      KVM hints before capture attempts
+    - test_real_boot_lane.py covers report_real_boot_preflight.py after prepare_all_capture_runbooks.py
+    - bridge real-boot-preflight exposes preflight as an operator command
+    - bridge real-boot-preflight executed through run_project_command and reports ready_for_attempt true
+    - preflight confirmed QEMU, timeout, python3, parted, mkfs.vfat, and mcopy are available
+    - preflight confirmed cached images, prepared media, executable runbooks, operator README, display hint, and KVM access
+      are present
+    - next_real_boot_action.py selects the next variant missing valid evidence and prints concrete print/capture/record commands
+    - test_real_boot_lane.py covers next_real_boot_action.py for default and explicit variant selection
+    - bridge real-boot-next executed through run_project_command and selects running-live-install/E2E-001 as the next runtime
+      action
+    - bridge exposes variant-specific next-action shortcuts for install and both outdated-running upgrade variants
+    - bridge real-boot-validate-local now reports 32 focused tests passed via run_project_command
+    - variant-specific next-action bridge shortcuts were smoke-tested for E2E-004 and E2E-005
+    - capture_session_matrix.yml now stores serial evidence logs under infra/vagrant-lab/real-boot-lane/out/serial-logs instead
+      of /tmp
+    - prepare_all_capture_runbooks.py regenerated all runbooks with persistent serial-log paths
+    - focused e2e suite confirms matrix/runbooks contain no stale /tmp/tails-guest-probe paths
+    - prepare_all_capture_runbooks.py creates infra/vagrant-lab/real-boot-lane/out/serial-logs during setup
+    - prepare_all_capture_runbooks.py now includes serial_log_dir in its JSON output
+    - test_real_boot_lane.py validates prepare_all_capture_runbooks.py creates serial_log_dir
+    - report_real_boot_artifacts.py inventories cached Tails images, capture media, generated runbooks, README, and serial-log
+      targets
+    - test_real_boot_lane.py covers report_real_boot_artifacts.py after prepare_all_capture_runbooks.py
+    - bridge real-boot-artifacts executed through run_project_command and reports ready_for_capture_attempt true with serial
+      logs still absent
+    - infra/vagrant-lab/real-boot-lane/OPERATOR.md documents the bridge workflow and persistent artifact locations
+    - test_real_boot_lane.py validates OPERATOR.md lists real-boot bridge commands and persistent serial-log paths
+    - bridge manifest parser confirms real-boot commands including real-boot-artifacts are discoverable
+    - bridge real-boot-operator prints the stable OPERATOR.md guide through run_project_command
+    - real-boot-operator complements generated real-boot-readme by documenting persistent artifacts and bridge workflow
+    - bridge real-boot-validate-local now reports 34 focused tests passed via run_project_command
+    - snapshot_real_boot_status.py writes persistent JSON and Markdown status snapshots under real-boot-lane/out/status-snapshots
+    - test_real_boot_lane.py covers snapshot_real_boot_status.py and validates all three next-action sections
+    - bridge real-boot-snapshot executed through run_project_command and reports 3/3 ready with 0/3 valid evidence
+    - bundle_real_boot_evidence.py creates tar.gz bundles of persistent real-boot artifacts and snapshots
+    - bundle_real_boot_evidence.py has strict mode that fails with stdout JSON until all expected serial logs exist
+    - bridge real-boot-bundle executed through run_project_command and created latest.tar.gz plus latest.manifest.json
+    - test_real_boot_lane.py covers non-strict and strict evidence bundling behavior
+    - OPERATOR.md documents real-boot-snapshot, real-boot-bundle, and real-boot-bundle-strict workflows
+    - test_real_boot_lane.py validates OPERATOR.md lists snapshot and bundle commands plus persistent artifact paths
+    - focused real-boot suite reports 37 tests passed after snapshot/bundle/operator documentation updates
+    default_e2e: false
+    next_step: perform booted-Tails runtime capture, refresh real-boot-snapshot, then run real-boot-bundle-strict
+    todo_refs:
+    - E2E-005
+    real_boot_variant: outdated-running-source-device-upgrade
+    real_boot_preflight: infra/vagrant-lab/real-boot-lane/preflight_real_boot_lane.py --json
+    qemu_smoke:
+      date: '2026-05-20'
+      image: tails-amd64-7.7.2.img
+      version: 7.7.2
+      returncode: 124
+      success: true
+      timeout_seconds: 20
+      result: QEMU accepted the image and stayed alive until bounded timeout; this is launcher smoke, not full in-guest readiness
+        proof
+      stderr_tail: 'qemu-system-x86_64: ioctl(KVM_CREATE_VM) failed: Input/output error
+
+        qemu-system-x86_64: failed to initialize kvm: Input/output error
+
+        qemu-system-x86_64: falling back to tcg
+
+        qemu-system-x86_64: terminating on signal 15 from pid 590804 (timeout)
+
+        '
+    qmp_probe:
+      date: '2026-05-20'
+      image: tails-amd64-7.7.2.img
+      version: 7.7.2
+      returncode: 0
+      success: true
+      qmp_connected: true
+      qmp_status: *id001
+      qmp_kvm: *id002
+      block_count: 2
+      result: QEMU exposed QMP, reported running status and block devices, then accepted QMP quit; still not full in-guest
+        Tails readiness proof
+    guest_probe_contract: infra/vagrant-lab/real-boot-lane/guest_probe_contract.yml
+    guest_probe_script: infra/vagrant-lab/real-boot-lane/guest_probe.py
+    guest_probe_validator: infra/vagrant-lab/real-boot-lane/validate_guest_probe_output.py
+    guest_probe_injection_path: boot_tails_qemu.sh --share-dir <repo-or-probe-dir>,tailscloner --serial-log <serial.log>
+    guest_probe_capture_runner: infra/vagrant-lab/real-boot-lane/capture_guest_probe_from_qemu.py
+    guest_probe_share_builder: infra/vagrant-lab/real-boot-lane/prepare_guest_probe_share.py
+    guest_probe_guest_command: sudo mount -t 9p -o trans=virtio,version=9p2000.L,ro tailscloner /mnt/tailscloner && /mnt/tailscloner/run_guest_probe.sh
+    manual_capture_command: python3 infra/vagrant-lab/real-boot-lane/capture_guest_probe_from_qemu.py --version 7.7.2 --scenario-variant
+      running-live-install --interactive-display --prepare-share --serial-log /tmp/tails-guest-probe.log
+    guest_probe_evidence_recorder: infra/vagrant-lab/real-boot-lane/record_guest_probe_evidence.py
+    record_evidence_command: python3 infra/vagrant-lab/real-boot-lane/record_guest_probe_evidence.py --log-file /tmp/tails-guest-probe.log
+      --mark-done
+    capture_session_matrix: infra/vagrant-lab/real-boot-lane/capture_session_matrix.yml
+    capture_session_planner: infra/vagrant-lab/real-boot-lane/plan_capture_session.py
+    capture_session_variant: outdated-running-source-device-upgrade
+    capture_role_resolver: infra/vagrant-lab/real-boot-lane/resolve_capture_roles.py
+    resolve_roles_command: python3 infra/vagrant-lab/real-boot-lane/resolve_capture_roles.py --variant outdated-running-source-device-upgrade
+      --emit-plan
+    strict_resolve_roles_command: python3 infra/vagrant-lab/real-boot-lane/resolve_capture_roles.py --variant outdated-running-source-device-upgrade
+      --emit-plan --require-existing-media
+    capture_readiness_reporter: infra/vagrant-lab/real-boot-lane/report_capture_readiness.py
+    capture_readiness_command: python3 infra/vagrant-lab/real-boot-lane/report_capture_readiness.py --require-existing-media
+    capture_runbook_emitter: infra/vagrant-lab/real-boot-lane/emit_capture_runbook.py
+    capture_media_preparer: infra/vagrant-lab/real-boot-lane/prepare_capture_media.py
+    prepare_capture_media_command: python3 infra/vagrant-lab/real-boot-lane/prepare_capture_media.py --force
+    capture_media_roles: &id003
+      newer_attached_source_media: /home/user/code/tails-cloner/.cache/vagrant-lab/capture-media/newer-attached-source-media.img
+      newer_img_on_disc: /home/user/code/tails-cloner/.cache/vagrant-lab/tails-images/tails-amd64-7.7.2.img
+      persistent_target_media: /home/user/code/tails-cloner/.cache/vagrant-lab/capture-media/persistent-target-media.img
+    strict_capture_readiness:
+      ready_count: 3
+      total_count: 3
+      all_ready: true
+    capture_runbook: /home/user/code/tails-cloner/infra/vagrant-lab/real-boot-lane/out/capture-runbooks/outdated-running-source-device-upgrade.sh
+    prepare_all_capture_runbooks: infra/vagrant-lab/real-boot-lane/prepare_all_capture_runbooks.py --force
+    capture_operator_readme: /home/user/code/tails-cloner/infra/vagrant-lab/real-boot-lane/out/capture-runbooks/README.md
+    capture_evidence_reporter: infra/vagrant-lab/real-boot-lane/report_capture_evidence.py
+    capture_evidence_command: python3 infra/vagrant-lab/real-boot-lane/report_capture_evidence.py --require-all-valid
+    prepared_capture_readiness_reporter: infra/vagrant-lab/real-boot-lane/report_prepared_capture_readiness.py
+    bridge_real_boot_readiness: real-boot-readiness
+    bridge_real_boot_validate_local: real-boot-validate-local
+    bridge_real_boot_readme: real-boot-readme
+    bridge_real_boot_validate_local_verified: true
+    bridge_real_boot_state: real-boot-state
+    last_real_boot_state:
+      ready: 3/3
+      valid_evidence: 0/3
+      remaining: run capture, paste guest command inside Tails, run record
+    bridge_real_boot_validate_local_last_result: 37 passed
+    bridge_real_boot_preflight: real-boot-preflight
+    bridge_real_boot_preflight_verified:
+      ready_for_attempt: true
+      cached_images: 2
+      tools_ready: true
+      media_ready: true
+      runbooks_ready: true
+      display_hint_available: true
+      kvm_access: true
+    bridge_real_boot_next: real-boot-next
+    bridge_real_boot_next_variant: real-boot-next-upgrade-source-device
+    persistent_serial_log: infra/vagrant-lab/real-boot-lane/out/serial-logs/outdated-running-source-device-upgrade.log
+    serial_log_dir_prepared_by_setup: infra/vagrant-lab/real-boot-lane/out/serial-logs
+    bridge_real_boot_artifacts: real-boot-artifacts
+    last_real_boot_artifacts:
+      ready_for_capture_attempt: true
+      tails_images_present: true
+      capture_media_present: true
+      runbooks_present: true
+      operator_readme_present: true
+      serial_log_dir_present: true
+      serial_logs_present: false
+    operator_doc: infra/vagrant-lab/real-boot-lane/OPERATOR.md
+    bridge_real_boot_operator: real-boot-operator
+    bridge_real_boot_snapshot: real-boot-snapshot
+    status_snapshot:
+      json: infra/vagrant-lab/real-boot-lane/out/status-snapshots/latest.json
+      markdown: infra/vagrant-lab/real-boot-lane/out/status-snapshots/latest.md
+      ready: 3/3
+      valid_evidence: 0/3
+      serial_logs_present: false
+    bridge_real_boot_bundle: real-boot-bundle
+    bridge_real_boot_bundle_strict: real-boot-bundle-strict
+    evidence_bundle:
+      latest_archive: infra/vagrant-lab/real-boot-lane/out/evidence-bundles/latest.tar.gz
+      latest_manifest: infra/vagrant-lab/real-boot-lane/out/evidence-bundles/latest.manifest.json
+      strict_ready: false
+      reason: expected runtime serial logs are not present yet
+    operator_doc_covers_bundles: true
+  upgrade.outdated_running_tails.source_iso_on_disc:
+    group: upgrade_with_persistence
+    title: Outdated running Tails upgrades from ISO/IMG on disk
+    desired_flow: outdated running Tails -> local newer ISO/IMG -> upgrade own/target Tails system partition only
+    persistence_required: true
+    current_status: partial
+    current_coverage:
+    - simulate-internal-upgrade-preserve-persistence runs real partition-scoped upgrader against fixture disk
+    - verifies persistence marker digest before/after
+    - controller itself is Ubuntu, not an outdated running Tails system
+    - real-boot-lane/lane.yml documents the QEMU real-boot acceptance and safety model
+    - real-boot-lane/boot_matrix.yml now defines a concrete QEMU preflight variant for this case
+    - real-boot-lane/preflight_real_boot_lane.py validates lane metadata and prints non-executing boot plans
+    - boot_tails_qemu.sh supports --dry-run, --headless, --timeout, --extra-drive, and --no-network
+    - test_real_boot_lane.py guards snapshot-mode, non-destructive real-boot preflight plans
+    - smoke_qemu_launch.py performs a bounded headless QEMU launch against cached Tails images
+    - bounded QEMU smoke passed for tails-amd64-7.7.2.img under TCG fallback until timeout
+    - boot_tails_qemu.sh now defaults to CPU model max for KVM/TCG portability
+    - boot_tails_qemu.sh supports QMP control socket and pidfile options
+    - probe_qemu_qmp.py starts QEMU, connects to QMP, queries status/block devices, and exits cleanly through QMP quit
+    - QMP probe passed for tails-amd64-7.7.2.img and reported VM status running with block devices visible
+    - guest_probe_contract.yml defines the required in-guest readiness schema and per-variant proof gates
+    - preflight_real_boot_lane.py now validates guest_probe_contract.yml together with the boot matrix
+    - test_real_boot_lane.py ensures real-boot variants cannot be considered complete without qmp_probe.success and guest_probe_output
+      gates
+    - guest_probe.py emits the guest_probe_output schema from inside a booted guest or synthetic test environment
+    - guest_probe.py supports serial-marker output prefixed with TAILS_CLONER_GUEST_PROBE=
+    - test_guest_probe.py validates live version detection, project visibility, source parent disk reporting, and missing-live-version
+      failure state
+    - validate_guest_probe_output.py validates raw JSON or serial-marker guest probe output against the real-boot contract
+    - validator enforces schema, variant support, live-version proof, running-Tails proof, project visibility, and source-target
+      exclusion/visibility gates
+    - test_validate_guest_probe_output.py covers accepted JSON, accepted serial logs, missing live version, unknown variants,
+      and missing marker failure
+    - boot_tails_qemu.sh supports --serial-log for capturing TAILS_CLONER_GUEST_PROBE output
+    - boot_tails_qemu.sh supports read-only --share-dir PATH,TAG via virtio-9p for guest probe/project injection
+    - test_real_boot_lane.py validates serial-log and read-only share dry-run launcher behavior
+    - capture_guest_probe_from_qemu.py boots with QMP, serial log, read-only share, waits for guest marker, validates it,
+      and shuts QEMU down
+    - test_real_boot_lane.py validates capture runner dry-run command construction for serial/share/QMP/pidfile
+    - prepare_guest_probe_share.py builds a read-only 9p share bundle containing guest_probe.py, run_guest_probe.sh, README,
+      and a minimal project import marker
+    - run_guest_probe.sh mounts the 9p share inside Tails and emits TAILS_CLONER_GUEST_PROBE through the guest serial device
+    - test_real_boot_lane.py validates the generated guest probe share bundle and command content
+    - capture_guest_probe_from_qemu.py supports --interactive-display for manual graphical Tails sessions while still capturing
+      serial/QMP evidence
+    - capture_guest_probe_from_qemu.py supports --prepare-share to auto-build the guest-probe 9p share before launch
+    - capture runner JSON includes the exact guest command to mount the share and run run_guest_probe.sh
+    - record_guest_probe_evidence.py validates a captured serial marker and records evidence into scenarios.yml/todos.yml
+    - record_guest_probe_evidence.py can promote the matching real-boot scenario/TODO with --mark-done after validation
+    - test_validate_guest_probe_output.py covers recorder dry-run mapping from running-live-install to install.running_live_iso_usb
+      and E2E-001
+    - capture_session_matrix.yml defines variant-specific capture arguments and attachment roles
+    - plan_capture_session.py emits concrete capture_command, guest_step, and record_command for this real-boot variant
+    - test_real_boot_lane.py validates variant-specific capture planning including extra attachments for outdated-running
+      source-device flow
+    - resolve_capture_roles.py discovers cached Tails image versions and resolves capture-session version roles
+    - resolve_capture_roles.py reports missing media-role mappings before a real capture session is attempted
+    - resolve_capture_roles.py can emit a full capture-session plan when roles are complete
+    - capture_session_matrix.yml classifies role values as cached_version or media_path
+    - resolve_capture_roles.py reports media_path_status and missing_media_paths for capture attachments
+    - resolve_capture_roles.py supports --require-existing-media to fail before QEMU launch when media paths are missing
+    - report_capture_readiness.py summarizes readiness for all real-boot capture variants
+    - report_capture_readiness.py can enforce strict media-path existence across the capture matrix
+    - test_real_boot_lane.py validates readiness reporting for ready and blocked variants
+    - emit_capture_runbook.py writes a runnable shell runbook for READY capture variants
+    - runbook contains capture command, guest-step instructions, and record command
+    - test_real_boot_lane.py validates runbook generation for running-live-install
+    - generated capture runbooks now support print, capture, and record actions with print as safe default
+    - running-live-install runbook passes bash syntax check and print-mode smoke validation
+    - plan_capture_session.py emits an exact guest_command for mounting the 9p share and running run_guest_probe.sh
+    - generated capture runbooks print the exact copy-paste guest command before capture
+    - running-live-install runbook print mode verifies the guest command appears in instructions
+    - prepare_capture_media.py creates local media-path role files for outdated-running real-boot planning
+    - prepare_capture_media.py emits role mappings for newer_img_on_disc, newer_attached_source_media, and persistent_target_media
+    - test_real_boot_lane.py validates prepare_capture_media.py with throwaway small media files
+    - prepare_capture_media.py produced concrete reusable media role files under .cache/vagrant-lab/capture-media
+    - strict report_capture_readiness.py reports all three real-boot capture variants READY when generated media roles are
+      supplied
+    - capture runbook emitted for outdated-running-iso-upgrade
+    - prepare_all_capture_runbooks.py prepares media, verifies strict readiness, and emits all real-boot capture runbooks
+      in one command
+    - test_real_boot_lane.py validates prepare_all_capture_runbooks.py emits all three variant runbooks
+    - prepare_all_capture_runbooks.py writes an operator README next to generated capture runbooks
+    - operator README documents print/capture/record runtime sequence for all three real-boot variants
+    - test_real_boot_lane.py validates the operator README contains all variant commands
+    - report_capture_evidence.py reports missing/valid/invalid guest serial marker evidence for all real-boot variants
+    - report_capture_evidence.py can run strict with --require-all-valid for CI/operator gating
+    - test_real_boot_lane.py validates report_capture_evidence.py with a synthetic valid marker override
+    - report_prepared_capture_readiness.py reports strict readiness using the default prepared media paths without creating
+      files
+    - bridge command real-boot-readiness now uses report_prepared_capture_readiness.py --require-all-ready
+    - test_real_boot_lane.py validates prepared readiness after prepare_all_capture_runbooks.py
+    - bridge.yml now exposes real-boot-validate-local for local script/test validation without starting QEMU/Tails
+    - bridge.yml command arrays are formatted as inline YAML arrays and accepted by the project bridge parser
+    - project bridge parser validation confirms real-boot bridge commands are discoverable
+    - bridge real-boot-validate-local was executed through the project command runner and passed 28 focused tests
+    - bridge real-boot-readme prints the generated operator README through the project command runner
+    - real-boot README command is available as a bridge-level operator entrypoint
+    - report_real_boot_state.py combines readiness, evidence status, runbook paths, and next actions for all real-boot variants
+    - bridge real-boot-state was executed through the project command runner and reports 3/3 ready with 0/3 evidence valid
+    - real-boot-state makes the remaining runtime guest evidence gap explicit per variant
+    - test_real_boot_lane.py covers report_real_boot_state.py after prepare_all_capture_runbooks.py
+    - bridge real-boot-validate-local now passes 29 focused real-boot tests through run_project_command
+    - report_real_boot_state.py regression validates 3/3 readiness, runbook existence, README existence, and per-variant next
+      actions
+    - report_real_boot_preflight.py checks host tools, cached images, prepared media, runbooks, README, display hints, and
+      KVM hints before capture attempts
+    - test_real_boot_lane.py covers report_real_boot_preflight.py after prepare_all_capture_runbooks.py
+    - bridge real-boot-preflight exposes preflight as an operator command
+    - bridge real-boot-preflight executed through run_project_command and reports ready_for_attempt true
+    - preflight confirmed QEMU, timeout, python3, parted, mkfs.vfat, and mcopy are available
+    - preflight confirmed cached images, prepared media, executable runbooks, operator README, display hint, and KVM access
+      are present
+    - next_real_boot_action.py selects the next variant missing valid evidence and prints concrete print/capture/record commands
+    - test_real_boot_lane.py covers next_real_boot_action.py for default and explicit variant selection
+    - bridge real-boot-next executed through run_project_command and selects running-live-install/E2E-001 as the next runtime
+      action
+    - bridge exposes variant-specific next-action shortcuts for install and both outdated-running upgrade variants
+    - bridge real-boot-validate-local now reports 32 focused tests passed via run_project_command
+    - variant-specific next-action bridge shortcuts were smoke-tested for E2E-004 and E2E-005
+    - capture_session_matrix.yml now stores serial evidence logs under infra/vagrant-lab/real-boot-lane/out/serial-logs instead
+      of /tmp
+    - prepare_all_capture_runbooks.py regenerated all runbooks with persistent serial-log paths
+    - focused e2e suite confirms matrix/runbooks contain no stale /tmp/tails-guest-probe paths
+    - prepare_all_capture_runbooks.py creates infra/vagrant-lab/real-boot-lane/out/serial-logs during setup
+    - prepare_all_capture_runbooks.py now includes serial_log_dir in its JSON output
+    - test_real_boot_lane.py validates prepare_all_capture_runbooks.py creates serial_log_dir
+    - report_real_boot_artifacts.py inventories cached Tails images, capture media, generated runbooks, README, and serial-log
+      targets
+    - test_real_boot_lane.py covers report_real_boot_artifacts.py after prepare_all_capture_runbooks.py
+    - bridge real-boot-artifacts executed through run_project_command and reports ready_for_capture_attempt true with serial
+      logs still absent
+    - infra/vagrant-lab/real-boot-lane/OPERATOR.md documents the bridge workflow and persistent artifact locations
+    - test_real_boot_lane.py validates OPERATOR.md lists real-boot bridge commands and persistent serial-log paths
+    - bridge manifest parser confirms real-boot commands including real-boot-artifacts are discoverable
+    - bridge real-boot-operator prints the stable OPERATOR.md guide through run_project_command
+    - real-boot-operator complements generated real-boot-readme by documenting persistent artifacts and bridge workflow
+    - bridge real-boot-validate-local now reports 34 focused tests passed via run_project_command
+    - snapshot_real_boot_status.py writes persistent JSON and Markdown status snapshots under real-boot-lane/out/status-snapshots
+    - test_real_boot_lane.py covers snapshot_real_boot_status.py and validates all three next-action sections
+    - bridge real-boot-snapshot executed through run_project_command and reports 3/3 ready with 0/3 valid evidence
+    - bundle_real_boot_evidence.py creates tar.gz bundles of persistent real-boot artifacts and snapshots
+    - bundle_real_boot_evidence.py has strict mode that fails with stdout JSON until all expected serial logs exist
+    - bridge real-boot-bundle executed through run_project_command and created latest.tar.gz plus latest.manifest.json
+    - test_real_boot_lane.py covers non-strict and strict evidence bundling behavior
+    - OPERATOR.md documents real-boot-snapshot, real-boot-bundle, and real-boot-bundle-strict workflows
+    - test_real_boot_lane.py validates OPERATOR.md lists snapshot and bundle commands plus persistent artifact paths
+    - focused real-boot suite reports 37 tests passed after snapshot/bundle/operator documentation updates
+    default_e2e: optional
+    command: sudo TAILS_CLONER_LAB_ALLOW_DESTRUCTIVE=1 PYTHONPATH=src python3 infra/vagrant-lab/scripts/run_lab_scenario.py
+      simulate-internal-upgrade-preserve-persistence --version 7.7.2
+    next_step: perform booted-Tails runtime capture, refresh real-boot-snapshot, then run real-boot-bundle-strict
+    todo_refs:
+    - E2E-004
+    real_boot_lane: infra/vagrant-lab/real-boot-lane/lane.yml
+    real_boot_variant: outdated-running-iso-upgrade
+    real_boot_preflight: infra/vagrant-lab/real-boot-lane/preflight_real_boot_lane.py --json
+    qemu_smoke:
+      date: '2026-05-20'
+      image: tails-amd64-7.7.2.img
+      version: 7.7.2
+      returncode: 124
+      success: true
+      timeout_seconds: 20
+      result: QEMU accepted the image and stayed alive until bounded timeout; this is launcher smoke, not full in-guest readiness
+        proof
+      stderr_tail: 'qemu-system-x86_64: ioctl(KVM_CREATE_VM) failed: Input/output error
+
+        qemu-system-x86_64: failed to initialize kvm: Input/output error
+
+        qemu-system-x86_64: falling back to tcg
+
+        qemu-system-x86_64: terminating on signal 15 from pid 590804 (timeout)
+
+        '
+    qmp_probe:
+      date: '2026-05-20'
+      image: tails-amd64-7.7.2.img
+      version: 7.7.2
+      returncode: 0
+      success: true
+      qmp_connected: true
+      qmp_status: *id001
+      qmp_kvm: *id002
+      block_count: 2
+      result: QEMU exposed QMP, reported running status and block devices, then accepted QMP quit; still not full in-guest
+        Tails readiness proof
+    guest_probe_contract: infra/vagrant-lab/real-boot-lane/guest_probe_contract.yml
+    guest_probe_script: infra/vagrant-lab/real-boot-lane/guest_probe.py
+    guest_probe_validator: infra/vagrant-lab/real-boot-lane/validate_guest_probe_output.py
+    guest_probe_injection_path: boot_tails_qemu.sh --share-dir <repo-or-probe-dir>,tailscloner --serial-log <serial.log>
+    guest_probe_capture_runner: infra/vagrant-lab/real-boot-lane/capture_guest_probe_from_qemu.py
+    guest_probe_share_builder: infra/vagrant-lab/real-boot-lane/prepare_guest_probe_share.py
+    guest_probe_guest_command: sudo mount -t 9p -o trans=virtio,version=9p2000.L,ro tailscloner /mnt/tailscloner && /mnt/tailscloner/run_guest_probe.sh
+    manual_capture_command: python3 infra/vagrant-lab/real-boot-lane/capture_guest_probe_from_qemu.py --version 7.7.2 --scenario-variant
+      running-live-install --interactive-display --prepare-share --serial-log /tmp/tails-guest-probe.log
+    guest_probe_evidence_recorder: infra/vagrant-lab/real-boot-lane/record_guest_probe_evidence.py
+    record_evidence_command: python3 infra/vagrant-lab/real-boot-lane/record_guest_probe_evidence.py --log-file /tmp/tails-guest-probe.log
+      --mark-done
+    capture_session_matrix: infra/vagrant-lab/real-boot-lane/capture_session_matrix.yml
+    capture_session_planner: infra/vagrant-lab/real-boot-lane/plan_capture_session.py
+    capture_session_variant: outdated-running-iso-upgrade
+    capture_role_resolver: infra/vagrant-lab/real-boot-lane/resolve_capture_roles.py
+    resolve_roles_command: python3 infra/vagrant-lab/real-boot-lane/resolve_capture_roles.py --variant outdated-running-iso-upgrade
+      --emit-plan
+    strict_resolve_roles_command: python3 infra/vagrant-lab/real-boot-lane/resolve_capture_roles.py --variant outdated-running-iso-upgrade
+      --emit-plan --require-existing-media
+    capture_readiness_reporter: infra/vagrant-lab/real-boot-lane/report_capture_readiness.py
+    capture_readiness_command: python3 infra/vagrant-lab/real-boot-lane/report_capture_readiness.py --require-existing-media
+    capture_runbook_emitter: infra/vagrant-lab/real-boot-lane/emit_capture_runbook.py
+    capture_media_preparer: infra/vagrant-lab/real-boot-lane/prepare_capture_media.py
+    prepare_capture_media_command: python3 infra/vagrant-lab/real-boot-lane/prepare_capture_media.py --force
+    capture_media_roles: *id003
+    strict_capture_readiness:
+      ready_count: 3
+      total_count: 3
+      all_ready: true
+    capture_runbook: /home/user/code/tails-cloner/infra/vagrant-lab/real-boot-lane/out/capture-runbooks/outdated-running-iso-upgrade.sh
+    prepare_all_capture_runbooks: infra/vagrant-lab/real-boot-lane/prepare_all_capture_runbooks.py --force
+    capture_operator_readme: /home/user/code/tails-cloner/infra/vagrant-lab/real-boot-lane/out/capture-runbooks/README.md
+    capture_evidence_reporter: infra/vagrant-lab/real-boot-lane/report_capture_evidence.py
+    capture_evidence_command: python3 infra/vagrant-lab/real-boot-lane/report_capture_evidence.py --require-all-valid
+    prepared_capture_readiness_reporter: infra/vagrant-lab/real-boot-lane/report_prepared_capture_readiness.py
+    bridge_real_boot_readiness: real-boot-readiness
+    bridge_real_boot_validate_local: real-boot-validate-local
+    bridge_real_boot_readme: real-boot-readme
+    bridge_real_boot_validate_local_verified: true
+    bridge_real_boot_state: real-boot-state
+    last_real_boot_state:
+      ready: 3/3
+      valid_evidence: 0/3
+      remaining: run capture, paste guest command inside Tails, run record
+    bridge_real_boot_validate_local_last_result: 37 passed
+    bridge_real_boot_preflight: real-boot-preflight
+    bridge_real_boot_preflight_verified:
+      ready_for_attempt: true
+      cached_images: 2
+      tools_ready: true
+      media_ready: true
+      runbooks_ready: true
+      display_hint_available: true
+      kvm_access: true
+    bridge_real_boot_next: real-boot-next
+    bridge_real_boot_next_variant: real-boot-next-upgrade-iso
+    persistent_serial_log: infra/vagrant-lab/real-boot-lane/out/serial-logs/outdated-running-iso-upgrade.log
+    serial_log_dir_prepared_by_setup: infra/vagrant-lab/real-boot-lane/out/serial-logs
+    bridge_real_boot_artifacts: real-boot-artifacts
+    last_real_boot_artifacts:
+      ready_for_capture_attempt: true
+      tails_images_present: true
+      capture_media_present: true
+      runbooks_present: true
+      operator_readme_present: true
+      serial_log_dir_present: true
+      serial_logs_present: false
+    operator_doc: infra/vagrant-lab/real-boot-lane/OPERATOR.md
+    bridge_real_boot_operator: real-boot-operator
+    bridge_real_boot_snapshot: real-boot-snapshot
+    status_snapshot:
+      json: infra/vagrant-lab/real-boot-lane/out/status-snapshots/latest.json
+      markdown: infra/vagrant-lab/real-boot-lane/out/status-snapshots/latest.md
+      ready: 3/3
+      valid_evidence: 0/3
+      serial_logs_present: false
+    bridge_real_boot_bundle: real-boot-bundle
+    bridge_real_boot_bundle_strict: real-boot-bundle-strict
+    evidence_bundle:
+      latest_archive: infra/vagrant-lab/real-boot-lane/out/evidence-bundles/latest.tar.gz
+      latest_manifest: infra/vagrant-lab/real-boot-lane/out/evidence-bundles/latest.manifest.json
+      strict_ready: false
+      reason: expected runtime serial logs are not present yet
+    operator_doc_covers_bundles: true
+  upgrade.any_linux.source_running_live_iso_usb:
+    group: upgrade_with_persistence
+    title: Any Linux upgrades existing Tails using running live USB as source
+    desired_flow: Linux host -> source is running/attached live Tails USB -> upgrade target preserving persistence
+    persistence_required: true
+    current_status: implemented
+    current_coverage:
+    - source.py now has AttachedLiveSystemSource to represent a mounted live medium separate from the launcher OS
+    - AttachedLiveSystemSource validates live/Tails.version and exposes the source parent disk
+    - AttachedLiveSystemSource.target_is_source_device prevents selecting the source disk or partitions as target
+    - unit tests cover version validation, invalid source paths, and parent-disk target exclusion
+    - upgrader.py now has upgrade_tails_system_partition_from_device for attached live source devices
+    - source-device upgrade backend is partition-scoped and does not use whole-device clone
+    - unit tests prove source-device upgrade copies source vfat partition to target vfat partition and preserves target persistence
+    - controller.py can validate and record an attached live source selection
+    - controller.py exposes target_is_attached_live_source for parent-disk target exclusion
+    - AppState stores attached live source device, mount, and version fields
+    - tests/test_controller.py covers attached source set, clear, and target exclusion behavior
+    - run_lab_scenario.py now exposes simulate-source-device-upgrade-preserve-persistence
+    - source-device lab scenario uses source_disk as attached live source and target_upgrade_disk as persistent target
+    - source-device lab scenario verifies persistence marker digest before and after upgrade
+    - future disk fixture source partition is size-compatible with target upgrade system partition
+    - SourceMode.ATTACHED routes upgrade_selected_image through source-device upgrade service
+    - attached live sources are rejected for install/reinstall to avoid undefined whole-device install semantics
+    - controller tests prove attached-source upgrades use upgrade_from_device and never image-based upgrade
+    - app.py exposes an Attached live source radio option with source device, mount point, and validation button
+    - app.py validates attached live source through ApplicationController.set_attached_live_source
+    - app.py forces attached live source workflows into Upgrade mode
+    - app.py excludes the attached source disk and partitions from target choices
+    - app.py confirmation text describes attached live source without requiring a local image path
+    - run_lab_scenario.py exposes non-destructive preflight-source-device-upgrade-preserve-persistence
+    - preflight validates source live USB fixture, target persistence marker, source/target partition size compatibility,
+      and partition-scoped dd plan
+    default_e2e: false
+    next_step: keep as optional destructive e2e; remaining real-boot variants are tracked by E2E-004 and E2E-005
+    command: sudo TAILS_CLONER_LAB_ALLOW_DESTRUCTIVE=1 PYTHONPATH=src python3 infra/vagrant-lab/scripts/run_lab_scenario.py
+      simulate-source-device-upgrade-preserve-persistence
+    preflight_command: PYTHONPATH=src python3 infra/vagrant-lab/scripts/run_lab_scenario.py preflight-source-device-upgrade-preserve-persistence
+    verified_preflight:
+      date: '2026-05-20'
+      environment: vagrant controller
+      result: passed; no writes performed
+      source_live_usb_version: 7.7.2-fixture-source
+      marker_sha256_before: 727623ba61206b70bc96eac909aa207445529b71beee7e979178bf6e861d3f9f
+      plan: dd if=/dev/sdb1 of=/dev/sdd1 bs=4M status=progress conv=fsync
+    verified:
+      date: '2026-05-20'
+      environment: vagrant controller
+      command: sudo TAILS_CLONER_LAB_ALLOW_DESTRUCTIVE=1 PYTHONPATH=src python3 infra/vagrant-lab/scripts/run_lab_scenario.py
+        simulate-source-device-upgrade-preserve-persistence
+      result: passed; source /dev/sdb1 upgraded target /dev/sdd1 and persistence marker stayed unchanged
+      marker_sha256_before: 727623ba61206b70bc96eac909aa207445529b71beee7e979178bf6e861d3f9f
+      marker_sha256_after: 727623ba61206b70bc96eac909aa207445529b71beee7e979178bf6e861d3f9f
+  upgrade.any_linux.source_iso_on_disc:
+    group: upgrade_with_persistence
+    title: Any Linux upgrades existing Tails from ISO/IMG on disk
+    desired_flow: Linux host -> local newer ISO/IMG -> existing Tails target with persistence -> upgrade system partition
+      only
+    persistence_required: true
+    current_status: implemented
+    current_coverage:
+    - fixture upgrade disk has TAILS vfat partition plus persistence ext4 marker
+    - real upgrader is invoked by simulate-internal-upgrade-preserve-persistence
+    - marker hash must remain unchanged
+    default_e2e: optional
+    command: sudo TAILS_CLONER_LAB_ALLOW_DESTRUCTIVE=1 PYTHONPATH=src python3 infra/vagrant-lab/scripts/run_lab_scenario.py
+      simulate-internal-upgrade-preserve-persistence --version 7.7.2
+    next_step: wire as default once runtime/disk-space cost is acceptable

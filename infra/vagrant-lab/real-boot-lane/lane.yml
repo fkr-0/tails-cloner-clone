@@ -1,0 +1,24 @@
+version: 1
+lane: real_boot_qemu
+status: scaffolded
+script: infra/vagrant-lab/real-boot-lane/boot_tails_qemu.sh
+readme: infra/vagrant-lab/real-boot-lane/README.md
+purpose:
+- boot a real Tails image instead of only using synthetic block-device fixtures
+- verify running-live source discovery assumptions inside a booted live environment
+- provide the base lane for outdated-running-Tails upgrade scenarios
+safety:
+  default_destructive_writes: false
+  uses_temporary_overlay_or_snapshot: true
+  host_mutation_expected: false
+required_inputs:
+- one cached Tails IMG artifact from .cache/vagrant-lab/tails-images
+- optional extra target disk image for future install dry-runs
+acceptance_checks:
+- boot reaches a live Tails userspace or a clearly diagnosable failure state
+- live source version file is visible in the expected live-medium path
+- project checkout can be made available to the guest or tests can be injected another way
+- target disk exclusion logic prevents the booted source disk from being selected as an install target
+blocked_or_manual:
+- headless QEMU automation and guest readiness probing are not wired into default e2e yet
+- this lane is scaffolding until a controller-run boot proof is recorded

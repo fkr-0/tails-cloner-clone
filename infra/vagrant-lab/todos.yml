@@ -1,0 +1,516 @@
+version: 1
+items:
+  E2E-001:
+    title: Boot the controller from a real Tails live image for install-from-running-live-USB coverage
+    scenario_refs:
+    - install.running_live_iso_usb
+    status: in_progress
+    priority: high
+    kind: real_boot_lane
+    rationale: Current coverage only tests running-Tails detection primitives; the Vagrant controller still runs Ubuntu.
+    acceptance:
+    - real-boot-lane boots a Tails image or equivalent live medium with the project mounted
+    - cloner resolves the running live source without requiring a downloaded local image
+    - a second target disk is visible and the running source disk is excluded from target choices
+    - a dry-run or guarded destructive install proves the controller path works from inside the live system
+    implementation_notes:
+    - start from infra/vagrant-lab/real-boot-lane/boot_tails_qemu.sh
+    - prefer dry-run first; only add destructive writes behind TAILS_CLONER_LAB_ALLOW_DESTRUCTIVE=1
+    - real-boot-lane/lane.yml now captures scaffolded QEMU lane safety and acceptance criteria
+    - real-boot-lane/boot_matrix.yml defines variant running-live-install
+    - real-boot-lane/preflight_real_boot_lane.py validates metadata and prints a non-executing boot plan
+    - 'remaining work: execute the QEMU boot variant and capture in-guest evidence'
+    - boot_tails_qemu.sh now supports dry-run, headless serial, timeout, extra-drive, and no-network modes
+    - infra/vagrant-lab/tests/e2e/test_real_boot_lane.py validates the safe launcher/preflight behavior
+    - smoke_qemu_launch.py validates bounded headless launch of cached Tails image
+    - QEMU smoke passed with tails-amd64-7.7.2.img; KVM failed but TCG fallback stayed alive until timeout
+    - 'remaining work: capture in-guest readiness and live filesystem evidence, not just launcher viability'
+    - boot_tails_qemu.sh supports QMP and pidfile options for controlled probes
+    - probe_qemu_qmp.py passed against tails-amd64-7.7.2.img and proved QMP status/block query control
+    - 'remaining work: add guest agent/serial/SSH readiness signal to inspect /lib/live/mount/medium/live/Tails.version inside
+      the guest'
+    - guest_probe_contract.yml defines the required in-guest readiness output schema and variant gates
+    - preflight_real_boot_lane.py validates the guest probe contract before reporting the lane ready
+    - 'remaining work: implement serial/SSH/guest-agent transport that emits guest_probe_output from inside Tails'
+    - guest_probe.py emits the required guest readiness schema and supports serial-marker prefix output
+    - test_guest_probe.py validates synthetic guest-probe output and missing live-version behavior
+    - 'remaining work: execute guest_probe.py inside the booted Tails guest, not only against synthetic host paths'
+    - validate_guest_probe_output.py turns guest probe JSON or serial-marker logs into pass/fail evidence
+    - test_validate_guest_probe_output.py validates accepted and rejected probe outputs
+    - 'remaining work: capture real guest_probe.py output from inside the QEMU-booted Tails guest and run the validator on
+      it'
+    - boot_tails_qemu.sh supports serial-log capture for guest probe marker output
+    - boot_tails_qemu.sh supports read-only virtio-9p shared directories for guest probe/project injection
+    - 'remaining work: boot with serial-log/share-dir, run guest_probe.py inside Tails, and validate captured marker'
+    - capture_guest_probe_from_qemu.py provides the host-side end-to-end capture/validate/shutdown harness
+    - 'remaining work: arrange guest-side execution of guest_probe.py during or after Tails boot, then run the capture harness
+      without --dry-run'
+    - prepare_guest_probe_share.py generates the guest-side mount/run bundle for serial-marker execution
+    - run_guest_probe.sh is the concrete command to execute inside the booted Tails guest
+    - 'remaining work: execute run_guest_probe.sh inside Tails and capture/validate the serial marker'
+    - capture_guest_probe_from_qemu.py now supports --interactive-display and --prepare-share for operator-driven Tails guest
+      probing
+    - capture runner dry-run includes the exact guest command to execute inside Tails
+    - 'remaining work: run the manual capture session, execute guest command inside Tails, and record validated marker evidence'
+    - record_guest_probe_evidence.py provides the final metadata promotion path from validated serial marker to scenario/TODO
+      completion
+    - 'remaining work: capture a real Tails guest marker and run the recorder with --mark-done'
+    - capture_session_matrix.yml defines the running-live-install capture session shape
+    - plan_capture_session.py turns role mappings into concrete capture and record commands
+    - 'remaining work: resolve role mappings to real image/media paths and run the planned capture session'
+    - resolve_capture_roles.py resolves capture-session roles for running-live-install
+    - 'remaining work: run resolver with real media paths, then execute the emitted capture command'
+    - resolve_capture_roles.py now validates media-path role existence when --require-existing-media is used
+    - 'remaining work: run strict role resolution with real media paths before executing the capture command'
+    - report_capture_readiness.py reports ready/blocked status across all real-boot capture variants
+    - 'remaining work: supply any required role mappings, confirm READY, then run the planned capture session'
+    - emit_capture_runbook.py can emit a shell runbook for running-live-install once role resolution is READY
+    - 'remaining work: execute the generated runbook and capture real guest marker evidence'
+    - capture runbooks support print/capture/record actions; print remains safe default
+    - 'remaining work: execute capture action, run the in-guest probe command, then execute record action'
+    - plan_capture_session.py now emits the exact guest command for the interactive Tails step
+    - generated runbooks print the copy-paste guest command before capture
+    - 'remaining work: perform the interactive guest command in the booted Tails session and record the marker'
+    - prepare_all_capture_runbooks.py is the canonical non-interactive setup command for media/readiness/runbooks
+    - 'current capture runbook for this variant: /home/user/code/tails-cloner/infra/vagrant-lab/real-boot-lane/out/capture-runbooks/running-live-install.sh'
+    - 'remaining work: execute capture runbook and perform the interactive guest command inside Tails'
+    - operator README generated at /home/user/code/tails-cloner/infra/vagrant-lab/real-boot-lane/out/capture-runbooks/README.md
+    - operator README documents the runtime sequence for all real-boot capture variants
+    - 'remaining work: follow the README/runbook sequence in a booted Tails guest and record evidence'
+    - report_capture_evidence.py provides the final evidence-status check for expected serial marker logs
+    - 'remaining work: produce real guest marker logs by running the capture runbooks inside booted Tails'
+    - report_prepared_capture_readiness.py is the read-only readiness check for prepared default capture media
+    - bridge real-boot-readiness now reports prepared strict readiness correctly after setup
+    - 'remaining work: perform the generated runbook capture/record sequence in a booted Tails guest'
+    - bridge real-boot-validate-local validates real-boot lane scripts and focused tests without starting QEMU/Tails
+    - bridge.yml was repaired to a parser-accepted inline-array command format
+    - 'remaining work: perform runtime capture inside booted Tails and collect valid serial marker evidence'
+    - bridge real-boot-validate-local executed through run_project_command and passed 28 focused tests
+    - bridge real-boot-readme executed through run_project_command and printed the operator README
+    - bridge real-boot-state summarizes readiness/evidence/runbook/next-action status in one command
+    - 'latest real-boot-state result: 3/3 variants ready, 0/3 variants have valid runtime evidence'
+    - report_real_boot_state.py is now covered by test_real_boot_lane.py
+    - bridge real-boot-validate-local now reports 29 focused tests passed via run_project_command
+    - 'remaining work: produce real serial marker evidence from a booted Tails guest'
+    - report_real_boot_preflight.py adds a host/runtime readiness check before attempting capture
+    - bridge real-boot-preflight is now available as an operator preflight command
+    - bridge real-boot-preflight executed successfully and reports ready_for_attempt true
+    - runtime host preflight is green; remaining work is actual booted-Tails capture and evidence recording
+    - next_real_boot_action.py is available as bridge real-boot-next and prints the next concrete runtime capture sequence
+    - bridge real-boot-next executed successfully and currently selects running-live-install / E2E-001
+    - 'remaining work: perform the printed runtime sequence inside booted Tails and collect valid serial marker evidence'
+    - variant-specific next-action bridge command is real-boot-next-install
+    - bridge real-boot-validate-local now reports 32 focused tests passed via run_project_command
+    - persistent serial evidence log path is infra/vagrant-lab/real-boot-lane/out/serial-logs/running-live-install.log
+    - runbooks were regenerated so evidence logs no longer go to /tmp
+    - 'remaining work: perform the booted-Tails runtime capture and record the persistent serial marker evidence'
+    - prepare_all_capture_runbooks.py now eagerly creates the persistent serial-log directory
+    - prepare_all_capture_runbooks.py reports serial_log_dir in JSON so callers can inspect it
+    - 'remaining work: perform the booted-Tails runtime capture and record persistent serial marker evidence'
+    - bridge real-boot-artifacts reports all capture prerequisites present and serial runtime logs absent
+    - report_real_boot_artifacts.py is now the persistent artifact inventory command for the real-boot lane
+    - 'remaining work: perform the booted-Tails runtime capture to create the missing serial log artifact'
+    - OPERATOR.md now documents the real-boot bridge workflow and persistent artifact locations
+    - OPERATOR.md is covered by test_real_boot_lane.py to prevent stale command/path docs
+    - bridge real-boot-operator prints OPERATOR.md as the stable real-boot operator guide
+    - bridge real-boot-validate-local now reports 34 focused tests passed via run_project_command
+    - bridge real-boot-snapshot writes latest.json/latest.md status snapshots under out/status-snapshots
+    - latest snapshot reports 3/3 variants ready and 0/3 variants with valid evidence
+    - bridge real-boot-bundle packages current persistent real-boot artifacts into out/evidence-bundles/latest.tar.gz
+    - bridge real-boot-bundle-strict is available and intentionally waits for all runtime serial logs
+    - 'remaining work: perform booted-Tails runtime capture, then run strict evidence bundling'
+    - OPERATOR.md now documents status snapshots and evidence bundles including strict bundle promotion
+    - focused real-boot suite now reports 37 tests passed with operator snapshot/bundle coverage
+    - 'remaining work: perform booted-Tails runtime capture, refresh snapshot, and run strict evidence bundling'
+  E2E-002:
+    title: Add a source-device-to-target scenario for a not-running Tails live USB source
+    scenario_refs:
+    - install.not_running_live_iso_usb
+    status: done
+    priority: high
+    kind: lab_scenario
+    rationale: Current dry-run install uses a cached IMG file, while the matrix case is about an attached non-running live
+      USB source.
+    acceptance:
+    - source_disk contains a recognizable Tails-like system partition with live/Tails.version
+    - run_lab_scenario.py has a non-destructive dry-run-source-device-install scenario
+    - the dry-run command is partition/source-device explicit and cannot target the source disk itself
+    - scenario matrix command points at the new scenario
+    implementation_notes:
+    - source_disk contains live/Tails.version during provisioning; current controller source fixture was repaired in place
+    - run_lab_scenario.py exposes dry-run-source-device-install
+    - 'canonical install semantics chosen: whole source device to whole target device'
+    - run_lab_scenario.py exposes guarded source-device destructive validation
+    - dry-run passed in the running controller with source /dev/sdb and target /dev/sde
+    - 'remaining work: manually execute the guarded destructive validation in the controller and record evidence'
+    - guarded source-device install validation completed in the Vagrant controller, although the outer command timed out
+    - post-write validation showed target /dev/sde1 has TAILS_SRC and live/Tails.version=7.7.2-fixture-source
+    completion:
+      date: '2026-05-20'
+      evidence: post-write validation in the Vagrant controller showed /dev/sde1 copied TAILS_SRC and live/Tails.version from
+        /dev/sdb1
+  E2E-003:
+    title: Add guarded destructive fresh install validation from cached local disk image
+    scenario_refs:
+    - install.any_linux_download_to_disc
+    status: done
+    priority: medium
+    kind: destructive_lab_scenario
+    rationale: Current coverage proves command construction only; it does not validate the post-write target layout.
+    acceptance:
+    - destructive fresh install remains gated by TAILS_CLONER_LAB_ALLOW_DESTRUCTIVE=1
+    - target_fresh_disk is reset before the scenario or the scenario uses target_extra_disk
+    - post-write validation checks for a Tails system partition or expected image layout
+    - fixture state remains recoverable by reprovisioning
+    implementation_notes:
+    - run_lab_scenario.py exposes destructive-install-validate
+    - scenario supports --target extra to avoid consuming target_fresh_disk or target_upgrade_disk
+    - validated in the running controller with cached tails-amd64-7.7.2.img
+    - keep optional because it performs a destructive write and costs about one full image copy per run
+    completion:
+      date: '2026-05-19'
+      evidence: destructive-install-validate passed against target_extra_disk /dev/sde in the Vagrant controller
+  E2E-004:
+    title: Run ISO/IMG-on-disk upgrade from inside an outdated running Tails controller
+    scenario_refs:
+    - upgrade.outdated_running_tails.source_iso_on_disc
+    status: in_progress
+    priority: high
+    kind: real_boot_lane
+    rationale: Current persistence upgrade is real, but it runs from Ubuntu instead of an outdated running Tails system.
+    acceptance:
+    - old Tails image boots as the controller
+    - newer ISO/IMG is available on disk without redownloading between runs
+    - upgrade path invokes upgrade_selected_image or the same service boundary used by the UI
+    - persistence marker digest on the target remains unchanged
+    implementation_notes:
+    - reuse E2E-001 boot lane pieces
+    - prefer a fixture target disk distinct from the booted live source disk
+    - real-boot-lane/lane.yml now captures scaffolded QEMU lane safety and acceptance criteria
+    - real-boot-lane/boot_matrix.yml defines variant outdated-running-iso-upgrade
+    - real-boot-lane/preflight_real_boot_lane.py validates metadata and prints a non-executing boot plan
+    - 'remaining work: execute the QEMU boot variant and capture in-guest evidence'
+    - boot_tails_qemu.sh now supports dry-run, headless serial, timeout, extra-drive, and no-network modes
+    - infra/vagrant-lab/tests/e2e/test_real_boot_lane.py validates the safe launcher/preflight behavior
+    - smoke_qemu_launch.py validates bounded headless launch of cached Tails image
+    - QEMU smoke passed with tails-amd64-7.7.2.img; KVM failed but TCG fallback stayed alive until timeout
+    - 'remaining work: capture in-guest readiness and live filesystem evidence, not just launcher viability'
+    - boot_tails_qemu.sh supports QMP and pidfile options for controlled probes
+    - probe_qemu_qmp.py passed against tails-amd64-7.7.2.img and proved QMP status/block query control
+    - 'remaining work: add guest agent/serial/SSH readiness signal to inspect /lib/live/mount/medium/live/Tails.version inside
+      the guest'
+    - guest_probe_contract.yml defines the required in-guest readiness output schema and variant gates
+    - preflight_real_boot_lane.py validates the guest probe contract before reporting the lane ready
+    - 'remaining work: implement serial/SSH/guest-agent transport that emits guest_probe_output from inside Tails'
+    - guest_probe.py emits the required guest readiness schema and supports serial-marker prefix output
+    - test_guest_probe.py validates synthetic guest-probe output and missing live-version behavior
+    - 'remaining work: execute guest_probe.py inside the booted Tails guest, not only against synthetic host paths'
+    - validate_guest_probe_output.py turns guest probe JSON or serial-marker logs into pass/fail evidence
+    - test_validate_guest_probe_output.py validates accepted and rejected probe outputs
+    - 'remaining work: capture real guest_probe.py output from inside the QEMU-booted Tails guest and run the validator on
+      it'
+    - boot_tails_qemu.sh supports serial-log capture for guest probe marker output
+    - boot_tails_qemu.sh supports read-only virtio-9p shared directories for guest probe/project injection
+    - 'remaining work: boot with serial-log/share-dir, run guest_probe.py inside Tails, and validate captured marker'
+    - capture_guest_probe_from_qemu.py provides the host-side end-to-end capture/validate/shutdown harness
+    - 'remaining work: arrange guest-side execution of guest_probe.py during or after Tails boot, then run the capture harness
+      without --dry-run'
+    - prepare_guest_probe_share.py generates the guest-side mount/run bundle for serial-marker execution
+    - run_guest_probe.sh is the concrete command to execute inside the booted Tails guest
+    - 'remaining work: execute run_guest_probe.sh inside Tails and capture/validate the serial marker'
+    - capture_guest_probe_from_qemu.py now supports --interactive-display and --prepare-share for operator-driven Tails guest
+      probing
+    - capture runner dry-run includes the exact guest command to execute inside Tails
+    - 'remaining work: run the manual capture session, execute guest command inside Tails, and record validated marker evidence'
+    - record_guest_probe_evidence.py provides the final metadata promotion path from validated serial marker to scenario/TODO
+      completion
+    - 'remaining work: capture a real Tails guest marker and run the recorder with --mark-done'
+    - capture_session_matrix.yml defines the outdated-running-iso-upgrade capture session shape
+    - plan_capture_session.py turns role mappings into concrete capture and record commands
+    - 'remaining work: resolve role mappings to real image/media paths and run the planned capture session'
+    - resolve_capture_roles.py resolves capture-session roles for outdated-running-iso-upgrade
+    - 'remaining work: run resolver with real media paths, then execute the emitted capture command'
+    - resolve_capture_roles.py now validates media-path role existence when --require-existing-media is used
+    - 'remaining work: run strict role resolution with real media paths before executing the capture command'
+    - report_capture_readiness.py reports ready/blocked status across all real-boot capture variants
+    - 'remaining work: supply any required role mappings, confirm READY, then run the planned capture session'
+    - emit_capture_runbook.py can emit a shell runbook for outdated-running-iso-upgrade once role resolution is READY
+    - 'remaining work: execute the generated runbook and capture real guest marker evidence'
+    - capture runbooks support print/capture/record actions; print remains safe default
+    - 'remaining work: execute capture action, run the in-guest probe command, then execute record action'
+    - plan_capture_session.py now emits the exact guest command for the interactive Tails step
+    - generated runbooks print the copy-paste guest command before capture
+    - 'remaining work: perform the interactive guest command in the booted Tails session and record the marker'
+    - prepare_capture_media.py can generate local media role paths for this real-boot variant
+    - 'remaining work: generate media, resolve roles strictly, emit runbook, and perform the interactive guest capture'
+    - prepare_capture_media.py generated concrete media role files for strict capture planning
+    - strict capture readiness now reports all three real-boot variants READY with generated media role paths
+    - capture runbook emitted at infra/vagrant-lab/real-boot-lane/out/capture-runbooks/outdated-running-iso-upgrade.sh
+    - 'remaining work: execute the capture runbook and perform the interactive guest command inside Tails'
+    - prepare_all_capture_runbooks.py is the canonical non-interactive setup command for media/readiness/runbooks
+    - 'current capture runbook for this variant: /home/user/code/tails-cloner/infra/vagrant-lab/real-boot-lane/out/capture-runbooks/outdated-running-iso-upgrade.sh'
+    - 'remaining work: execute capture runbook and perform the interactive guest command inside Tails'
+    - operator README generated at /home/user/code/tails-cloner/infra/vagrant-lab/real-boot-lane/out/capture-runbooks/README.md
+    - operator README documents the runtime sequence for all real-boot capture variants
+    - 'remaining work: follow the README/runbook sequence in a booted Tails guest and record evidence'
+    - report_capture_evidence.py provides the final evidence-status check for expected serial marker logs
+    - 'remaining work: produce real guest marker logs by running the capture runbooks inside booted Tails'
+    - report_prepared_capture_readiness.py is the read-only readiness check for prepared default capture media
+    - bridge real-boot-readiness now reports prepared strict readiness correctly after setup
+    - 'remaining work: perform the generated runbook capture/record sequence in a booted Tails guest'
+    - bridge real-boot-validate-local validates real-boot lane scripts and focused tests without starting QEMU/Tails
+    - bridge.yml was repaired to a parser-accepted inline-array command format
+    - 'remaining work: perform runtime capture inside booted Tails and collect valid serial marker evidence'
+    - bridge real-boot-validate-local executed through run_project_command and passed 28 focused tests
+    - bridge real-boot-readme executed through run_project_command and printed the operator README
+    - bridge real-boot-state summarizes readiness/evidence/runbook/next-action status in one command
+    - 'latest real-boot-state result: 3/3 variants ready, 0/3 variants have valid runtime evidence'
+    - report_real_boot_state.py is now covered by test_real_boot_lane.py
+    - bridge real-boot-validate-local now reports 29 focused tests passed via run_project_command
+    - 'remaining work: produce real serial marker evidence from a booted Tails guest'
+    - report_real_boot_preflight.py adds a host/runtime readiness check before attempting capture
+    - bridge real-boot-preflight is now available as an operator preflight command
+    - bridge real-boot-preflight executed successfully and reports ready_for_attempt true
+    - runtime host preflight is green; remaining work is actual booted-Tails capture and evidence recording
+    - next_real_boot_action.py is available as bridge real-boot-next and prints the next concrete runtime capture sequence
+    - bridge real-boot-next executed successfully and currently selects running-live-install / E2E-001
+    - 'remaining work: perform the printed runtime sequence inside booted Tails and collect valid serial marker evidence'
+    - variant-specific next-action bridge command is real-boot-next-upgrade-iso
+    - bridge real-boot-validate-local now reports 32 focused tests passed via run_project_command
+    - persistent serial evidence log path is infra/vagrant-lab/real-boot-lane/out/serial-logs/outdated-running-iso-upgrade.log
+    - runbooks were regenerated so evidence logs no longer go to /tmp
+    - 'remaining work: perform the booted-Tails runtime capture and record the persistent serial marker evidence'
+    - prepare_all_capture_runbooks.py now eagerly creates the persistent serial-log directory
+    - prepare_all_capture_runbooks.py reports serial_log_dir in JSON so callers can inspect it
+    - 'remaining work: perform the booted-Tails runtime capture and record persistent serial marker evidence'
+    - bridge real-boot-artifacts reports all capture prerequisites present and serial runtime logs absent
+    - report_real_boot_artifacts.py is now the persistent artifact inventory command for the real-boot lane
+    - 'remaining work: perform the booted-Tails runtime capture to create the missing serial log artifact'
+    - OPERATOR.md now documents the real-boot bridge workflow and persistent artifact locations
+    - OPERATOR.md is covered by test_real_boot_lane.py to prevent stale command/path docs
+    - bridge real-boot-operator prints OPERATOR.md as the stable real-boot operator guide
+    - bridge real-boot-validate-local now reports 34 focused tests passed via run_project_command
+    - bridge real-boot-snapshot writes latest.json/latest.md status snapshots under out/status-snapshots
+    - latest snapshot reports 3/3 variants ready and 0/3 variants with valid evidence
+    - bridge real-boot-bundle packages current persistent real-boot artifacts into out/evidence-bundles/latest.tar.gz
+    - bridge real-boot-bundle-strict is available and intentionally waits for all runtime serial logs
+    - 'remaining work: perform booted-Tails runtime capture, then run strict evidence bundling'
+    - OPERATOR.md now documents status snapshots and evidence bundles including strict bundle promotion
+    - focused real-boot suite now reports 37 tests passed with operator snapshot/bundle coverage
+    - 'remaining work: perform booted-Tails runtime capture, refresh snapshot, and run strict evidence bundling'
+  E2E-005:
+    title: Run outdated-running-Tails upgrade from an attached not-running newer live USB source
+    scenario_refs:
+    - upgrade.outdated_running_tails.source_not_running_live_iso_usb
+    status: in_progress
+    priority: medium
+    kind: real_boot_lane
+    rationale: 'This combines the two currently missing capabilities: outdated live controller plus attached source-device
+      upgrade.'
+    acceptance:
+    - old Tails image boots as the controller
+    - newer Tails source device is attached but not running
+    - upgrade copies only the target Tails system partition
+    - persistence partition and marker digest remain unchanged
+    implementation_notes:
+    - depends on E2E-002 and E2E-004
+    - keep destructive write gated
+    - real-boot-lane/boot_matrix.yml defines variant outdated-running-source-device-upgrade
+    - real-boot-lane/preflight_real_boot_lane.py validates metadata and prints a non-executing boot plan
+    - 'remaining work: execute the QEMU boot variant and capture in-guest evidence'
+    - boot_tails_qemu.sh now supports dry-run, headless serial, timeout, extra-drive, and no-network modes
+    - infra/vagrant-lab/tests/e2e/test_real_boot_lane.py validates the safe launcher/preflight behavior
+    - smoke_qemu_launch.py validates bounded headless launch of cached Tails image
+    - QEMU smoke passed with tails-amd64-7.7.2.img; KVM failed but TCG fallback stayed alive until timeout
+    - 'remaining work: capture in-guest readiness and live filesystem evidence, not just launcher viability'
+    - boot_tails_qemu.sh supports QMP and pidfile options for controlled probes
+    - probe_qemu_qmp.py passed against tails-amd64-7.7.2.img and proved QMP status/block query control
+    - 'remaining work: add guest agent/serial/SSH readiness signal to inspect /lib/live/mount/medium/live/Tails.version inside
+      the guest'
+    - guest_probe_contract.yml defines the required in-guest readiness output schema and variant gates
+    - preflight_real_boot_lane.py validates the guest probe contract before reporting the lane ready
+    - 'remaining work: implement serial/SSH/guest-agent transport that emits guest_probe_output from inside Tails'
+    - guest_probe.py emits the required guest readiness schema and supports serial-marker prefix output
+    - test_guest_probe.py validates synthetic guest-probe output and missing live-version behavior
+    - 'remaining work: execute guest_probe.py inside the booted Tails guest, not only against synthetic host paths'
+    - validate_guest_probe_output.py turns guest probe JSON or serial-marker logs into pass/fail evidence
+    - test_validate_guest_probe_output.py validates accepted and rejected probe outputs
+    - 'remaining work: capture real guest_probe.py output from inside the QEMU-booted Tails guest and run the validator on
+      it'
+    - boot_tails_qemu.sh supports serial-log capture for guest probe marker output
+    - boot_tails_qemu.sh supports read-only virtio-9p shared directories for guest probe/project injection
+    - 'remaining work: boot with serial-log/share-dir, run guest_probe.py inside Tails, and validate captured marker'
+    - capture_guest_probe_from_qemu.py provides the host-side end-to-end capture/validate/shutdown harness
+    - 'remaining work: arrange guest-side execution of guest_probe.py during or after Tails boot, then run the capture harness
+      without --dry-run'
+    - prepare_guest_probe_share.py generates the guest-side mount/run bundle for serial-marker execution
+    - run_guest_probe.sh is the concrete command to execute inside the booted Tails guest
+    - 'remaining work: execute run_guest_probe.sh inside Tails and capture/validate the serial marker'
+    - capture_guest_probe_from_qemu.py now supports --interactive-display and --prepare-share for operator-driven Tails guest
+      probing
+    - capture runner dry-run includes the exact guest command to execute inside Tails
+    - 'remaining work: run the manual capture session, execute guest command inside Tails, and record validated marker evidence'
+    - record_guest_probe_evidence.py provides the final metadata promotion path from validated serial marker to scenario/TODO
+      completion
+    - 'remaining work: capture a real Tails guest marker and run the recorder with --mark-done'
+    - capture_session_matrix.yml defines the outdated-running-source-device-upgrade capture session shape
+    - plan_capture_session.py turns role mappings into concrete capture and record commands
+    - 'remaining work: resolve role mappings to real image/media paths and run the planned capture session'
+    - resolve_capture_roles.py resolves capture-session roles for outdated-running-source-device-upgrade
+    - 'remaining work: run resolver with real media paths, then execute the emitted capture command'
+    - resolve_capture_roles.py now validates media-path role existence when --require-existing-media is used
+    - 'remaining work: run strict role resolution with real media paths before executing the capture command'
+    - report_capture_readiness.py reports ready/blocked status across all real-boot capture variants
+    - 'remaining work: supply any required role mappings, confirm READY, then run the planned capture session'
+    - emit_capture_runbook.py can emit a shell runbook for outdated-running-source-device-upgrade once role resolution is
+      READY
+    - 'remaining work: execute the generated runbook and capture real guest marker evidence'
+    - capture runbooks support print/capture/record actions; print remains safe default
+    - 'remaining work: execute capture action, run the in-guest probe command, then execute record action'
+    - plan_capture_session.py now emits the exact guest command for the interactive Tails step
+    - generated runbooks print the copy-paste guest command before capture
+    - 'remaining work: perform the interactive guest command in the booted Tails session and record the marker'
+    - prepare_capture_media.py can generate local media role paths for this real-boot variant
+    - 'remaining work: generate media, resolve roles strictly, emit runbook, and perform the interactive guest capture'
+    - prepare_capture_media.py generated concrete media role files for strict capture planning
+    - strict capture readiness now reports all three real-boot variants READY with generated media role paths
+    - capture runbook emitted at infra/vagrant-lab/real-boot-lane/out/capture-runbooks/outdated-running-source-device-upgrade.sh
+    - 'remaining work: execute the capture runbook and perform the interactive guest command inside Tails'
+    - prepare_all_capture_runbooks.py is the canonical non-interactive setup command for media/readiness/runbooks
+    - 'current capture runbook for this variant: /home/user/code/tails-cloner/infra/vagrant-lab/real-boot-lane/out/capture-runbooks/outdated-running-source-device-upgrade.sh'
+    - 'remaining work: execute capture runbook and perform the interactive guest command inside Tails'
+    - operator README generated at /home/user/code/tails-cloner/infra/vagrant-lab/real-boot-lane/out/capture-runbooks/README.md
+    - operator README documents the runtime sequence for all real-boot capture variants
+    - 'remaining work: follow the README/runbook sequence in a booted Tails guest and record evidence'
+    - report_capture_evidence.py provides the final evidence-status check for expected serial marker logs
+    - 'remaining work: produce real guest marker logs by running the capture runbooks inside booted Tails'
+    - report_prepared_capture_readiness.py is the read-only readiness check for prepared default capture media
+    - bridge real-boot-readiness now reports prepared strict readiness correctly after setup
+    - 'remaining work: perform the generated runbook capture/record sequence in a booted Tails guest'
+    - bridge real-boot-validate-local validates real-boot lane scripts and focused tests without starting QEMU/Tails
+    - bridge.yml was repaired to a parser-accepted inline-array command format
+    - 'remaining work: perform runtime capture inside booted Tails and collect valid serial marker evidence'
+    - bridge real-boot-validate-local executed through run_project_command and passed 28 focused tests
+    - bridge real-boot-readme executed through run_project_command and printed the operator README
+    - bridge real-boot-state summarizes readiness/evidence/runbook/next-action status in one command
+    - 'latest real-boot-state result: 3/3 variants ready, 0/3 variants have valid runtime evidence'
+    - report_real_boot_state.py is now covered by test_real_boot_lane.py
+    - bridge real-boot-validate-local now reports 29 focused tests passed via run_project_command
+    - 'remaining work: produce real serial marker evidence from a booted Tails guest'
+    - report_real_boot_preflight.py adds a host/runtime readiness check before attempting capture
+    - bridge real-boot-preflight is now available as an operator preflight command
+    - bridge real-boot-preflight executed successfully and reports ready_for_attempt true
+    - runtime host preflight is green; remaining work is actual booted-Tails capture and evidence recording
+    - next_real_boot_action.py is available as bridge real-boot-next and prints the next concrete runtime capture sequence
+    - bridge real-boot-next executed successfully and currently selects running-live-install / E2E-001
+    - 'remaining work: perform the printed runtime sequence inside booted Tails and collect valid serial marker evidence'
+    - variant-specific next-action bridge command is real-boot-next-upgrade-source-device
+    - bridge real-boot-validate-local now reports 32 focused tests passed via run_project_command
+    - persistent serial evidence log path is infra/vagrant-lab/real-boot-lane/out/serial-logs/outdated-running-source-device-upgrade.log
+    - runbooks were regenerated so evidence logs no longer go to /tmp
+    - 'remaining work: perform the booted-Tails runtime capture and record the persistent serial marker evidence'
+    - prepare_all_capture_runbooks.py now eagerly creates the persistent serial-log directory
+    - prepare_all_capture_runbooks.py reports serial_log_dir in JSON so callers can inspect it
+    - 'remaining work: perform the booted-Tails runtime capture and record persistent serial marker evidence'
+    - bridge real-boot-artifacts reports all capture prerequisites present and serial runtime logs absent
+    - report_real_boot_artifacts.py is now the persistent artifact inventory command for the real-boot lane
+    - 'remaining work: perform the booted-Tails runtime capture to create the missing serial log artifact'
+    - OPERATOR.md now documents the real-boot bridge workflow and persistent artifact locations
+    - OPERATOR.md is covered by test_real_boot_lane.py to prevent stale command/path docs
+    - bridge real-boot-operator prints OPERATOR.md as the stable real-boot operator guide
+    - bridge real-boot-validate-local now reports 34 focused tests passed via run_project_command
+    - bridge real-boot-snapshot writes latest.json/latest.md status snapshots under out/status-snapshots
+    - latest snapshot reports 3/3 variants ready and 0/3 variants with valid evidence
+    - bridge real-boot-bundle packages current persistent real-boot artifacts into out/evidence-bundles/latest.tar.gz
+    - bridge real-boot-bundle-strict is available and intentionally waits for all runtime serial logs
+    - 'remaining work: perform booted-Tails runtime capture, then run strict evidence bundling'
+    - OPERATOR.md now documents status snapshots and evidence bundles including strict bundle promotion
+    - focused real-boot suite now reports 37 tests passed with operator snapshot/bundle coverage
+    - 'remaining work: perform booted-Tails runtime capture, refresh snapshot, and run strict evidence bundling'
+  E2E-006:
+    title: Support any-Linux upgrade using a running live USB as the source
+    scenario_refs:
+    - upgrade.any_linux.source_running_live_iso_usb
+    status: done
+    priority: medium
+    kind: source_model
+    rationale: Current source model supports running Tails when the app itself runs there, not a separate running live source
+      device observed from Linux.
+    acceptance:
+    - source model can represent an attached/running live source separately from the launcher OS
+    - lab has a safe synthetic or real-boot fixture for that source
+    - upgrade uses the source system partition and preserves target persistence
+    - UI copy clearly distinguishes launcher system, source medium, and target device
+    implementation_notes:
+    - SourceType now includes ATTACHED_LIVE_SYSTEM
+    - AttachedLiveSystemSource represents a mounted live medium independent from the launcher OS
+    - AttachedLiveSystemSource exposes parent_device and target_is_source_device for source/target safety
+    - tests/test_source.py covers the new source model
+    - 'remaining work: wire this model into UI/controller source selection and lab execution'
+    - upgrader.py exposes upgrade_tails_system_partition_from_device for partition-scoped upgrades from attached live sources
+    - tests/test_upgrader.py covers source-device upgrade safety and same-device rejection
+    - AppState stores attached live source device, mount, and version
+    - ApplicationController exposes set_attached_live_source, clear_attached_live_source, and target_is_attached_live_source
+    - tests/test_controller.py covers controller attached-source state and target exclusion
+    - run_lab_scenario.py exposes simulate-source-device-upgrade-preserve-persistence
+    - disk fixture source partition is now provisioned at 1024MiB for upgrade target compatibility
+    - 'remaining work: execute guarded source-device persistence upgrade scenario in the controller and record evidence'
+    - SourceMode.ATTACHED is wired through ApplicationController.upgrade_selected_image
+    - attached live source install/reinstall is rejected by controller
+    - tests/test_controller.py proves attached-source upgrade dispatch and source-as-target rejection
+    - app.py exposes attached live source UI controls and validation button
+    - app.py forces attached live source flows into Upgrade mode and excludes source disk from targets
+    - py_compile and focused pytest passed after UI wiring
+    - run_lab_scenario.py exposes non-destructive preflight-source-device-upgrade-preserve-persistence
+    - preflight validates source/target partition size compatibility before destructive source-device upgrade
+    - 'remaining work: run preflight and then guarded destructive source-device persistence upgrade in the controller'
+    - preflight-source-device-upgrade-preserve-persistence passed in the Vagrant controller after repairing source fixture
+      size
+    - preflight produced partition-scoped plan dd if=/dev/sdb1 of=/dev/sdd1 and did not write
+    - guarded source-device persistence upgrade passed in the Vagrant controller
+    - source /dev/sdb1 upgraded target /dev/sdd1 while marker digest stayed unchanged
+    completion:
+      date: '2026-05-20'
+      evidence: simulate-source-device-upgrade-preserve-persistence passed in the Vagrant controller; marker digest unchanged
+        before/after
+  LAB-ARTIFACT-CHECKSUMS:
+    title: Pin cached Tails artifact sha256 values and require checksum verification
+    status: done
+    priority: high
+    kind: lab_infrastructure
+    rationale: The Vagrant lab should not silently accept corrupted or replaced multi-GB Tails images.
+    acceptance:
+    - tails_test_artifacts have 64-character sha256 values
+    - tails_artifact_checksum_policy is require
+    - host-safe regression test validates pinned checksum vars
+    implementation_notes:
+    - sha256 values were computed from the existing cached .cache/vagrant-lab/tails-images files
+    - tails_artifact_checksum_policy is now require in infra/vagrant-lab/ansible/group_vars/all.yml
+    - infra/vagrant-lab/tests/e2e/test_artifact_checksum_vars.py validates pinned vars on the host
+    - bridge agent task for filling pinned Tails artifact sha256 values was removed as completed
+    completion:
+      date: '2026-05-20'
+      evidence: test_artifact_checksum_vars.py passed and all.yml contains require policy with two 64-character sha256 pins
+  LAB-SCENARIO-COVERAGE:
+    title: Audit guarded destructive install and upgrade scenario coverage
+    status: done
+    priority: high
+    kind: lab_infrastructure
+    rationale: The lab should make guarded destructive install/upgrade coverage visible without executing writes by default.
+    acceptance:
+    - scenario coverage report lists all matrix cases
+    - destructive-capable commands are checked for TAILS_CLONER_LAB_ALLOW_DESTRUCTIVE gating
+    - runner capabilities include guarded install, source-device install, image upgrade, source-device upgrade, and source-device
+      preflight
+    - host-safe regression validates the coverage report
+    implementation_notes:
+    - 'report_scenario_coverage.py reports 7 matrix cases: 4 implemented/done and 3 real-boot runtime gaps'
+    - report_scenario_coverage.py detects 5 guarded destructive/upgrade command declarations and 0 unguarded destructive cases
+    - test_scenario_coverage.py validates runner capabilities and no unguarded destructive cases
+    - vagrant-lab-scenario-coverage bridge command was added; direct read-only execution passed after bridge runner classified
+      the command conservatively
+    - remaining scenario gaps are the real-boot runtime evidence cases tracked by E2E-001, E2E-004, and E2E-005
+    completion:
+      date: '2026-05-20'
+      evidence: report_scenario_coverage.py passed with 7 cases, 5 guarded commands, 0 unguarded destructive cases; test_scenario_coverage.py
+        passed

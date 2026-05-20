@@ -1,0 +1,57 @@
+version: 1
+variants:
+  running-live-install:
+    scenario_refs:
+      - install.running_live_iso_usb
+    status: preflight_plan
+    controller_image_role: running_tails_current
+    source_role: booted_live_medium
+    target_role: separate_empty_target_disk
+    destructive_by_default: false
+    required_inputs:
+      - cached current Tails IMG artifact
+      - temporary target disk image or attached lab target block device
+    in_guest_checks:
+      - /lib/live/mount/medium/live/Tails.version exists
+      - source detection resolves the booted live medium
+      - source parent disk is excluded from target choices
+      - install path can be dry-run without selecting the boot source disk
+    next_step: boot with QEMU snapshot mode and capture source-detection proof
+
+  outdated-running-iso-upgrade:
+    scenario_refs:
+      - upgrade.outdated_running_tails.source_iso_on_disc
+    status: preflight_plan
+    controller_image_role: outdated_running_tails
+    source_role: newer_cached_img_on_disc
+    target_role: persistent_target_disk
+    destructive_by_default: false
+    required_inputs:
+      - cached outdated Tails IMG artifact
+      - cached newer Tails IMG artifact mounted or shared into guest
+      - persistent target disk fixture with marker file
+    in_guest_checks:
+      - old Tails boots as the controller environment
+      - newer image is visible from inside the guest
+      - upgrade path uses upgrade_selected_image or equivalent service boundary
+      - persistence marker digest is unchanged after guarded upgrade
+    next_step: add guest readiness probe and shared-artifact injection
+
+  outdated-running-source-device-upgrade:
+    scenario_refs:
+      - upgrade.outdated_running_tails.source_not_running_live_iso_usb
+    status: preflight_plan
+    controller_image_role: outdated_running_tails
+    source_role: attached_newer_not_running_live_usb
+    target_role: persistent_target_disk
+    destructive_by_default: false
+    required_inputs:
+      - cached outdated Tails IMG artifact
+      - attached newer Tails source disk fixture
+      - persistent target disk fixture with marker file
+    in_guest_checks:
+      - old Tails boots as the controller environment
+      - newer source disk is visible but not the booted controller source
+      - upgrade path copies only source system partition to target system partition
+      - persistence marker digest is unchanged after guarded upgrade
+    next_step: combine real-boot controller lane with source-device upgrade scenario
