@@ -3,7 +3,8 @@ from __future__ import annotations
 from concurrent.futures import Executor, ThreadPoolExecutor
 from pathlib import Path
 
-from tails_cloner.models import AppState, SourceMode, VersionAssets
+from tails_cloner.models import AppState, BlockDevice, SourceMode, VersionAssets
+from tails_cloner.planner import OperationKind, OperationPlan, OperationSource, plan_operation
 from tails_cloner.source import AttachedLiveSystemSource, get_parent_disk_path, is_running_tails, get_running_tails_version, get_running_tails_device
 
 
@@ -143,11 +144,50 @@ class ApplicationController:
             else:
                 device.disabled_reason = ""
 
-    def _ensure_target_is_selectable(self, device_path: str) -> None:
-        if self.target_is_running_system_device(device_path):
-            raise RuntimeError("Target device must not be the device currently running Tails.")
-        if self.target_is_attached_live_source(device_path):
-            raise RuntimeError("Target device must not be the attached live source device.")
+    def _find_target_device(self, device_path: str) -> BlockDevice:
+        target_parent = get_parent_disk_path(device_path)
+        if not self.state.devices:
+            self.refresh_devices()
+        self.annotate_device_selection_state()
+        for device in self.state.devices:
+            if device.path == device_path or device.path == target_parent:
+                return device
+        raise RuntimeError(f"Target device is not present in the current device list: {device_path}")
+
+    def _operation_source(self, image_path: str | None = None) -> OperationSource:
+        if self.state.source_mode == SourceMode.RUNNING:
+            return OperationSource(
+                type="running_source",
+                device=self.state.running_tails_device,
+                version=self.state.running_tails_version,
+            )
+        if self.state.source_mode == SourceMode.ATTACHED:
+            return OperationSource(
+                type="attached_source",
+                device=self.state.attached_live_source_device,
+                version=self.state.attached_live_source_version,
+            )
+        if self.state.source_mode == SourceMode.REMOTE:
+            return OperationSource(
+                type="remote_image",
+                path=image_path or self.state.selected_image_url,
+                version=self.state.selected_version,
+            )
+        return OperationSource(type="image", path=image_path or "")
+
+    def plan_target_operation(self, operation: OperationKind, device_path: str, image_path: str | None = None) -> OperationPlan:
+        target = self._find_target_device(device_path)
+        return plan_operation(
+            operation=operation,
+            source=self._operation_source(image_path),
+            target=target,
+        )
+
+    def _require_valid_target_plan(self, operation: OperationKind, device_path: str, image_path: str | None = None) -> OperationPlan:
+        plan = self.plan_target_operation(operation, device_path, image_path)
+        if plan.blocking_errors:
+            raise RuntimeError("\n".join(plan.blocking_errors))
+        return plan
 
     def shutdown(self) -> None:
         shutdown = getattr(self.executor, "shutdown", None)
@@ -233,7 +273,7 @@ class ApplicationController:
         """Install or reinstall an image to the target device with a whole-device write."""
         if self.state.source_mode == SourceMode.ATTACHED:
             raise RuntimeError("Attached live sources are only supported for persistence-preserving upgrades.")
-        self._ensure_target_is_selectable(device_path)
+        self._require_valid_target_plan(OperationKind.INSTALL, device_path, image_path)
         actual_image_path = self._resolve_source_image_path(image_path, "installing")
         self.state.status_message = f"Installing {actual_image_path} to {device_path}…"
 
@@ -257,7 +297,7 @@ class ApplicationController:
             self.upgrade_selected_from_attached_live_source(device_path, progress_callback=progress_callback)
             return
 
-        self._ensure_target_is_selectable(device_path)
+        self._require_valid_target_plan(OperationKind.UPGRADE, device_path, image_path)
         actual_image_path = self._resolve_source_image_path(image_path, "upgrading")
         self.state.status_message = f"Upgrading {device_path} from {actual_image_path}; Persistent Storage will be preserved…"
 
@@ -278,7 +318,7 @@ class ApplicationController:
         """Upgrade from an attached live source device without rewriting target persistence."""
         if not self.state.attached_live_source_device:
             raise RuntimeError("No attached Tails live source has been selected.")
-        self._ensure_target_is_selectable(device_path)
+        self._require_valid_target_plan(OperationKind.UPGRADE, device_path)
 
         source_device = get_parent_disk_path(self.state.attached_live_source_device)
         self.state.status_message = (

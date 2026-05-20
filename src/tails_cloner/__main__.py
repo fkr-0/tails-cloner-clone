@@ -5,7 +5,6 @@ import os
 import sys
 from collections.abc import Callable, Sequence
 
-from tails_cloner.app import TailsClonerApp
 from tails_cloner.cli import looks_like_cli_invocation, main as cli_main
 from tails_cloner.config import DEFAULT_REMOTE_INDEX_URL
 from tails_cloner.controller import ApplicationController
@@ -104,6 +103,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     parser = build_argument_parser()
     args = parser.parse_args(effective_argv)
+
+    from tails_cloner.app import TailsClonerApp
 
     controller = ApplicationController(
         state=AppState(

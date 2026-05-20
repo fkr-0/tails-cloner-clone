@@ -51,6 +51,17 @@ class FakeDeviceService:
                 vendor="SanDisk",
                 transport="usb",
                 removable=True,
+                has_tails=True,
+            ),
+            BlockDevice(
+                path="/dev/sdc",
+                size_bytes=32017219584,
+                size_label="29.8 GiB",
+                model="USB DISK",
+                vendor="Kingston",
+                transport="usb",
+                removable=True,
+                has_tails=True,
             )
         ]
 
@@ -186,7 +197,7 @@ class ControllerTests(unittest.TestCase):
 
         controller.refresh_devices()
 
-        self.assertEqual(controller.state.status_message, "Found 1 device(s).")
+        self.assertEqual(controller.state.status_message, "Found 2 device(s).")
 
 
     def test_refresh_devices_marks_running_device_visible_but_not_selectable(self) -> None:

@@ -12,8 +12,9 @@ from tails_cloner.config import DEFAULT_REMOTE_INDEX_URL
 from tails_cloner.controller import ApplicationController
 from tails_cloner.devices import DeviceService
 from tails_cloner.models import AppState, BlockDevice, SourceMode, VersionAssets
+from tails_cloner.planner import OperationKind, OperationSource, plan_operation
 from tails_cloner.remote_index import RemoteVersionIndex
-from tails_cloner.source import RunningLiveSystemSource, get_parent_disk_path
+from tails_cloner.source import AttachedLiveSystemSource, RunningLiveSystemSource, get_parent_disk_path
 
 
 class _NoWriteCloneService:
@@ -136,7 +137,7 @@ def handle_versions(args: argparse.Namespace) -> int:
 def handle_devices(args: argparse.Namespace) -> int:
     controller = _build_controller(args.remote_index_url)
     try:
-        controller.detect_running_tails()
+        controller._detect_running_tails()
         controller.refresh_devices()
         devices = controller.state.devices
         if args.devices_command == "list":
@@ -160,78 +161,85 @@ def handle_devices(args: argparse.Namespace) -> int:
 
 
 def handle_source(args: argparse.Namespace) -> int:
-    source = RunningLiveSystemSource()
-    payload = {
-        "running_tails_available": source.exists,
-        "version": source.version or "",
-        "device": source.device or "",
-        "parent_device": get_parent_disk_path(source.device or ""),
-        "mount_point": str(source.mount_point),
-        "iso_path": str(source.get_iso_path() or ""),
-    }
+    if args.source_command == "running":
+        source = RunningLiveSystemSource()
+        payload = {
+            "running_tails_available": source.exists,
+            "version": source.version or "",
+            "device": source.device or "",
+            "parent_device": get_parent_disk_path(source.device or ""),
+            "mount_point": str(source.mount_point),
+            "iso_path": str(source.get_iso_path() or ""),
+        }
+    elif args.source_command == "validate-attached":
+        source = AttachedLiveSystemSource(device_path=args.device, mount_point=Path(args.mount_point))
+        try:
+            source.validate()
+            valid = True
+            error = ""
+        except Exception as exc:  # noqa: BLE001 - surfaced as CLI validation error
+            valid = False
+            error = str(exc)
+        payload = {
+            "valid": valid,
+            "error": error,
+            "device": source.device_path,
+            "parent_device": source.parent_device,
+            "mount_point": str(source.mount_point),
+            "version": source.version or "",
+            "live_path": str(source.get_liveos_path()),
+            "iso_path": str(source.get_iso_path() or ""),
+        }
+    else:
+        raise SystemExit(f"unknown source command: {args.source_command}")
+
     if args.json:
         _print_json(payload)
     else:
         for key, value in payload.items():
             print(f"{key}: {value}")
+    if args.source_command == "validate-attached" and not payload["valid"]:
+        return 1
     return 0
 
 
 def handle_plan(args: argparse.Namespace) -> int:
     controller = _build_controller(args.remote_index_url)
     try:
-        controller.detect_running_tails()
+        controller._detect_running_tails()
         controller.refresh_devices()
         device = _find_device(controller.state.devices, args.target)
         if device is None:
             raise SystemExit(f"target device not found: {args.target}")
-        source: dict[str, str] = {}
         if args.image:
-            source = {"type": "image", "path": str(Path(args.image))}
+            source = OperationSource(type="image", path=str(Path(args.image)))
         elif args.running_source:
             running = RunningLiveSystemSource()
-            source = {
-                "type": "running_source",
-                "device": running.device or "",
-                "version": running.version or "",
-            }
+            source = OperationSource(
+                type="running_source",
+                device=running.device or "",
+                version=running.version or "",
+            )
         else:
             raise SystemExit("plan requires --image or --running-source")
 
-        errors = []
-        warnings = []
-        if not device.selectable:
-            errors.append(device.disabled_reason or "target is not selectable")
-        if args.plan_command == "upgrade" and not device.has_tails:
-            errors.append("upgrade target does not contain an existing Tails installation")
-        if args.plan_command == "install" and device.has_tails:
-            warnings.append("target already contains Tails; install would reinstall and may remove Persistent Storage")
-        if device.read_only:
-            errors.append("target is read-only")
-        if not device.removable:
-            warnings.append("target is not reported as removable; verify that this is intentional")
-
-        payload = {
-            "operation": args.plan_command,
-            "source": source,
-            "target": _device_to_dict(device),
-            "blocking_errors": errors,
-            "warnings": warnings,
-            "requires_confirmation": True,
-            "would_write": not errors,
-            "dry_run_only": True,
-        }
+        plan = plan_operation(
+            operation=OperationKind(args.plan_command),
+            source=source,
+            target=device,
+        )
+        payload = plan.to_dict()
         if args.json:
             _print_json(payload)
         else:
             print(f"operation: {payload['operation']}")
             print(f"target: {device.path}")
             print(f"would_write: {payload['would_write']}")
-            for warning in warnings:
+            for warning in payload["warnings"]:
                 print(f"warning: {warning}")
-            for error in errors:
+            for error in payload["blocking_errors"]:
                 print(f"error: {error}")
-        return 1 if errors else 0
+        return 1 if payload["blocking_errors"] else 0
     finally:
         controller.shutdown()
 
@@ -273,6 +281,10 @@ def build_cli_parser() -> argparse.ArgumentParser:
     source = subcommands.add_parser("source", help="Inspect source media.")
     source_subcommands = source.add_subparsers(dest="source_command", required=True)
     source_subcommands.add_parser("running", help="Show currently running Tails source.").set_defaults(func=handle_source)
+    validate_attached = source_subcommands.add_parser("validate-attached", help="Validate a mounted attached Tails live source.")
+    validate_attached.add_argument("--device", required=True, help="Attached source partition path, for example /dev/sdb1.")
+    validate_attached.add_argument("--mount-point", required=True, help="Mount point containing live/Tails.version.")
+    validate_attached.set_defaults(func=handle_source)
 
     plan = subcommands.add_parser("plan", help="Create a dry-run operation plan.")
     plan_subcommands = plan.add_subparsers(dest="plan_command", required=True)

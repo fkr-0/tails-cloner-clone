@@ -26,8 +26,17 @@ def test_cli_help_is_available() -> None:
 
 def test_package_main_routes_cli_subcommands() -> None:
     with mock.patch("tails_cloner.__main__.cli_main", return_value=0) as cli_main:
-        assert package_main(["devices", "list"]) == 0
+        with mock.patch("tails_cloner.app.TailsClonerApp", side_effect=AssertionError("GUI imported on CLI path")):
+            assert package_main(["devices", "list"]) == 0
     cli_main.assert_called_once_with(["devices", "list"])
+
+
+def test_package_main_source_does_not_import_gui_module_on_cli_path() -> None:
+    main_source = __import__("pathlib").Path("src/tails_cloner/__main__.py").read_text(encoding="utf-8")
+    lines_before_cli_dispatch = main_source.split("if looks_like_cli_invocation", 1)[0]
+
+    assert "from tails_cloner.app import TailsClonerApp" not in lines_before_cli_dispatch
+    assert "from tails_cloner.app import TailsClonerApp" in main_source
 
 
 def test_cli_accepts_json_after_subcommand() -> None:
@@ -68,7 +77,7 @@ def test_devices_list_json_marks_running_device_not_selectable() -> None:
         def __init__(self):
             self.state = type("State", (), {"devices": [running, target]})()
 
-        def detect_running_tails(self):
+        def _detect_running_tails(self):
             return None
 
         def refresh_devices(self):
@@ -114,7 +123,7 @@ def test_plan_refuses_running_source_target() -> None:
         def __init__(self):
             self.state = type("State", (), {"devices": [running]})()
 
-        def detect_running_tails(self):
+        def _detect_running_tails(self):
             return None
 
         def refresh_devices(self):
@@ -155,7 +164,7 @@ def test_source_running_json(monkeypatch) -> None:
         def get_iso_path(self):
             return "/lib/live/mount/medium/live/Tails.iso"
 
-    args = type("Args", (), {"json": True})()
+    args = type("Args", (), {"source_command": "running", "json": True})()
     monkeypatch.setattr(cli, "RunningLiveSystemSource", FakeSource)
 
     result, payload = capture_json(cli.handle_source, args)
@@ -165,3 +174,75 @@ def test_source_running_json(monkeypatch) -> None:
     assert payload["version"] == "7.7.2"
     assert payload["device"] == "/dev/sdb1"
     assert payload["parent_device"] == "/dev/sdb"
+
+
+def test_source_validate_attached_json_for_valid_tails_mount(tmp_path) -> None:
+    live = tmp_path / "live"
+    live.mkdir()
+    (live / "Tails.version").write_text("7.7.2\n", encoding="utf-8")
+    (live / "Tails.iso").write_text("fake iso placeholder", encoding="utf-8")
+
+    args = type(
+        "Args",
+        (),
+        {
+            "source_command": "validate-attached",
+            "device": "/dev/sdb1",
+            "mount_point": str(tmp_path),
+            "json": True,
+        },
+    )()
+
+    result, payload = capture_json(cli.handle_source, args)
+
+    assert result == 0
+    assert payload["valid"] is True
+    assert payload["error"] == ""
+    assert payload["device"] == "/dev/sdb1"
+    assert payload["parent_device"] == "/dev/sdb"
+    assert payload["version"] == "7.7.2"
+    assert payload["live_path"] == str(live)
+    assert payload["iso_path"] == str(live / "Tails.iso")
+
+
+def test_source_validate_attached_json_for_invalid_mount(tmp_path) -> None:
+    args = type(
+        "Args",
+        (),
+        {
+            "source_command": "validate-attached",
+            "device": "/dev/sdb1",
+            "mount_point": str(tmp_path),
+            "json": True,
+        },
+    )()
+
+    result, payload = capture_json(cli.handle_source, args)
+
+    assert result == 1
+    assert payload["valid"] is False
+    assert "missing" in payload["error"]
+    assert payload["version"] == ""
+
+
+def test_cli_parser_accepts_source_validate_attached_after_subcommand_flags(tmp_path) -> None:
+    live = tmp_path / "live"
+    live.mkdir()
+    (live / "Tails.version").write_text("7.7.2\n", encoding="utf-8")
+
+    result, payload = capture_json(
+        cli.main,
+        [
+            "source",
+            "validate-attached",
+            "--device",
+            "/dev/sdb1",
+            "--mount-point",
+            str(tmp_path),
+            "--json",
+        ],
+    )
+
+    assert result == 0
+    assert payload["valid"] is True
+    assert payload["version"] == "7.7.2"

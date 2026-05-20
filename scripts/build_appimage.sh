@@ -15,9 +15,11 @@ for size in 16 24 32 48 64 128 256 512; do
   mkdir -p "$APPDIR/usr/share/icons/hicolor/${size}x${size}/apps"
 done
 
-python3 -m pip install --upgrade pip
-python3 -m pip install pyinstaller
-pyinstaller "$ROOT_DIR/packaging/tails-cloner-clone.spec" --noconfirm --clean
+VENV_DIR="$BUILD_DIR/venv"
+python3 -m venv "$VENV_DIR"
+"$VENV_DIR/bin/python" -m pip install --upgrade pip
+"$VENV_DIR/bin/python" -m pip install pyinstaller
+"$VENV_DIR/bin/pyinstaller" "$ROOT_DIR/packaging/tails-cloner-clone.spec" --noconfirm --clean
 
 cp -r "$DIST_DIR/tails-cloner-clone" "$APPDIR/usr/lib/tails-cloner-clone"
 

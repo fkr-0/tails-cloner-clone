@@ -12,8 +12,8 @@ from urllib.request import urlopen
 from tails_cloner.boot_loader import discover_boot_loader_entries
 from tails_cloner.config import BRANDING, FONT_SIZE_LARGE, FONT_SIZE_MEDIUM, MIN_WINDOW_SIZE, REFRESH_INTERVAL_MS, WINDOW_SIZE
 from tails_cloner.controller import ApplicationController
-from tails_cloner.devices import MIN_INSTALLATION_SIZE_GB
 from tails_cloner.models import BlockDevice, SourceMode
+from tails_cloner.planner import OperationKind, OperationSource, plan_operation
 
 
 class TailsClonerApp(tk.Tk):
@@ -837,52 +837,25 @@ class TailsClonerApp(tk.Tk):
                 device = d
                 break
 
-        if device and device.disabled_reason:
-            messagebox.showerror("Device cannot be selected", device.disabled_reason)
+        if device is None:
+            messagebox.showerror("Missing device", "Choose a device before cloning.")
+            return
+
+        operation = OperationKind.UPGRADE if self._upgrade_mode_enabled() else OperationKind.INSTALL
+        plan = plan_operation(
+            operation=operation,
+            source=self._current_operation_source(),
+            target=device,
+        )
+        if plan.blocking_errors:
+            messagebox.showerror("Device cannot be selected", "\n".join(plan.blocking_errors))
             self._update_device_warnings_and_button()
             return
 
-        # Customize confirmation message based on device state
-        button_text = self.clone_button.cget("text")
-
-        # Get source description for confirmation
-        if self.controller.state.source_mode == SourceMode.RUNNING:
-            source_desc = f"running Tails {self.controller.state.running_tails_version}"
-        elif self.controller.state.source_mode == SourceMode.ATTACHED:
-            source_desc = (
-                f"attached Tails live source {self.controller.state.attached_live_source_version or 'unknown'} "
-                f"from {self.controller.state.attached_live_source_device or 'not selected'}"
-            )
-        else:
-            source_desc = Path(image_path).name
-
-        if button_text == "Upgrade":
-            title = "Confirm upgrade"
-            message = (
-                f"Upgrade {device_path} from {source_desc}?\n\n"
-                f"Source: {source_desc}\n"
-                f"Target: {device_path} (existing Tails installation detected; installed version not detected)\n"
-                f"Action: Upgrade preserving Persistent Storage\n\n"
-                f"This will upgrade the existing Tails installation while preserving the Persistent Storage."
-            )
-        elif button_text == "Reinstall (delete all data)":
-            title = "Confirm reinstallation"
-            message = (
-                f"Reinstall Tails on {device_path} from {source_desc}?\n\n"
-                f"The Persistent Storage on this USB stick will be lost.\n\n"
-                f"All data on this USB stick will be lost."
-            )
-        else:
-            title = "Confirm installation"
-            message = (
-                f"Install Tails to {device_path} from {source_desc}?\n\n"
-                f"All data on this USB stick will be lost."
-            )
-
-        confirmed = messagebox.askyesno(title, message, icon=messagebox.WARNING)
+        confirmed = messagebox.askyesno(plan.confirmation_title, plan.confirmation_message, icon=messagebox.WARNING)
         if not confirmed:
             return
-        is_upgrade = button_text == "Upgrade"
+        is_upgrade = plan.operation == OperationKind.UPGRADE
         self.controller.executor.submit(self._run_write_operation, image_path, device_path, is_upgrade)
 
     def _run_write_operation(self, image_path: str | None, device_path: str, is_upgrade: bool) -> None:
@@ -1031,6 +1004,27 @@ class TailsClonerApp(tk.Tk):
         # Update warnings and button text
         self._update_device_warnings_and_button()
 
+    def _current_operation_source(self) -> OperationSource:
+        if self.controller.state.source_mode == SourceMode.RUNNING:
+            return OperationSource(
+                type="running_source",
+                device=self.controller.state.running_tails_device,
+                version=self.controller.state.running_tails_version,
+            )
+        if self.controller.state.source_mode == SourceMode.ATTACHED:
+            return OperationSource(
+                type="attached_source",
+                device=self.controller.state.attached_live_source_device,
+                version=self.controller.state.attached_live_source_version,
+            )
+        if self.controller.state.source_mode == SourceMode.REMOTE:
+            return OperationSource(
+                type="remote_image",
+                version=self.controller.state.selected_version,
+                path=self.controller.state.selected_image_url,
+            )
+        return OperationSource(type="image", path=self.image_path_var.get().strip())
+
     def _update_device_warnings_and_button(self) -> None:
         """Update device warnings and clone button text based on selected device."""
         selected_name = self.device_var.get()
@@ -1051,54 +1045,18 @@ class TailsClonerApp(tk.Tk):
             self.clone_button.config(text="Install", state="disabled")
             return
 
-        warnings = []
-        upgrade_mode = self._upgrade_mode_enabled()
+        operation = OperationKind.UPGRADE if self._upgrade_mode_enabled() else OperationKind.INSTALL
+        plan = plan_operation(
+            operation=operation,
+            source=self._current_operation_source(),
+            target=device,
+        )
 
-        if device.disabled_reason:
-            self.device_warning_label.config(text=device.disabled_reason)
-            self.device_status_label.config(text="Device is visible for context but cannot be selected as a target.", foreground="#a63636")
-            self.clone_button.config(text="Not selectable", state="disabled")
-            return
-
-        # Check for various device issues (matching legacy installer behavior)
-        if device.read_only:
-            warnings.append("This device is read-only and cannot be written to.")
-        elif upgrade_mode:
-            if not device.has_tails:
-                warnings.append("Upgrade requires an existing Tails installation on the selected target.")
-                self.clone_button.config(text="Upgrade", state="disabled")
-                self.device_warning_label.config(text="\n".join(warnings))
-                return
-            if not device.is_big_enough_for_upgrade:
-                warnings.append("This Tails device is too small for a safe upgrade from this version. Use Install/Reinstall only if you accept deleting all data.")
-                self.clone_button.config(text="Upgrade", state="disabled")
-                self.device_warning_label.config(text="\n".join(warnings))
-                return
-            self.clone_button.config(text="Upgrade")
-            self.device_status_label.config(text="Existing Tails installation detected. Upgrade will preserve Persistent Storage.", foreground="#2e7d32")
-        elif not device.is_big_enough_for_installation:
-            warnings.append(f"This device is too small to install Tails (at least {MIN_INSTALLATION_SIZE_GB} GB is required).")
-            self.device_warning_label.config(text="\n".join(warnings))
-            self.clone_button.config(text="Install", state="disabled")
-            return
-        elif device.has_tails:
-            self.clone_button.config(text="Reinstall (delete all data)")
-            self.device_status_label.config(text="Device has Tails installed. Install/Reinstall will delete Persistent Storage.", foreground="#a63636")
-        elif not device.removable:
-            warnings.append("This device is configured as non-removable by its manufacturer. Tails may fail to start from it. Please try installing on a different model.")
-            self.clone_button.config(text="Install")
-        else:
-            self.clone_button.config(text="Install")
-
-        if warnings:
-            self.device_warning_label.config(text="\n".join(warnings))
-            if device.read_only or not device.is_big_enough_for_installation:
-                self.clone_button.config(state="disabled")
-            else:
-                self.clone_button.config(state="normal")
-        else:
-            self.device_warning_label.config(text="")
-            self.clone_button.config(state="normal")
+        messages = plan.blocking_errors + plan.warnings
+        self.device_warning_label.config(text="\n".join(messages))
+        self.clone_button.config(text=plan.action_label, state="normal" if plan.would_write else "disabled")
+        foreground = plan.status_foreground or "#2e7d32"
+        self.device_status_label.config(text=plan.status_message, foreground=foreground)
 
     def _sync_selected_version_fields(self) -> None:
         version = self.controller.state.selected_version

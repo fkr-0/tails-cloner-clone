@@ -10,6 +10,8 @@ Options:
   --headless             Use -display none and serial stdio instead of GTK.
   --timeout SEC          Wrap qemu in timeout --foreground SEC.
   --extra-drive PATH     Attach an additional raw drive snapshot=on. May be repeated.
+  --boot-usb             Attach the boot image as USB mass storage instead of virtio.
+                         This matches Tails' live-media=removable boot expectation.
   --qmp UNIX_SOCKET      Enable QMP control socket at UNIX_SOCKET.
   --pidfile PATH         Write the QEMU process id to PATH.
   --serial-log PATH      Write guest serial output to PATH instead of stdio.
@@ -27,6 +29,7 @@ USAGE
 DRY_RUN=0
 HEADLESS=0
 NETWORK=1
+BOOT_USB=0
 TIMEOUT_SEC="${TAILS_QEMU_TIMEOUT_SEC:-}"
 QMP_SOCKET=""
 PIDFILE=""
@@ -60,6 +63,10 @@ while [[ $# -gt 0 ]]; do
       fi
       EXTRA_DRIVES+=("$2")
       shift 2
+      ;;
+    --boot-usb)
+      BOOT_USB=1
+      shift
       ;;
     --qmp)
       if [[ $# -lt 2 ]]; then
@@ -177,9 +184,19 @@ QEMU_CMD=(
   -cpu "$CPU_MODEL"
   -m "$MEMORY_MB"
   -smp "$CPUS"
-  -drive "file=$IMG_PATH,format=raw,if=virtio,snapshot=on"
-  -boot order=c
 )
+
+if [[ "$BOOT_USB" -eq 1 ]]; then
+  QEMU_CMD+=(
+    -device qemu-xhci,id=xhci
+    -drive "file=$IMG_PATH,format=raw,if=none,id=bootdisk,snapshot=on"
+    -device usb-storage,drive=bootdisk,bootindex=0,removable=on
+  )
+else
+  QEMU_CMD+=(-drive "file=$IMG_PATH,format=raw,if=virtio,snapshot=on")
+fi
+
+QEMU_CMD+=(-boot order=c)
 
 if [[ -n "$QMP_SOCKET" ]]; then
   QEMU_CMD+=(-qmp "unix:$QMP_SOCKET,server=on,wait=off")
