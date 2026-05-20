@@ -46,6 +46,42 @@ class BlockDeviceTests(unittest.TestCase):
         self.assertIn("[Tails installed]", device.pretty_name)
 
 
+    def test_pretty_name_marks_running_source_as_visible_but_not_selectable(self) -> None:
+        device = BlockDevice(
+            path="/dev/sdb",
+            size_bytes=16000000000,
+            size_label="14.9 GiB",
+            model="USB Drive",
+            vendor="SanDisk",
+            transport="usb",
+            removable=True,
+            is_running_system_device=True,
+            disabled_reason="running source",
+        )
+
+        self.assertIn("[running Tails source]", device.pretty_name)
+        self.assertIn("[not selectable]", device.pretty_name)
+        self.assertFalse(device.selectable)
+
+    def test_pretty_name_marks_attached_source_as_visible_but_not_selectable(self) -> None:
+        device = BlockDevice(
+            path="/dev/sdc",
+            size_bytes=16000000000,
+            size_label="14.9 GiB",
+            model="USB Drive",
+            vendor="Kingston",
+            transport="usb",
+            removable=True,
+            is_attached_source_device=True,
+            disabled_reason="attached source",
+        )
+
+        self.assertIn("[attached source]", device.pretty_name)
+        self.assertIn("[not selectable]", device.pretty_name)
+        self.assertFalse(device.selectable)
+
+
+
 class SourceModeTests(unittest.TestCase):
     def test_source_mode_values(self) -> None:
         """SourceMode enum has expected values."""

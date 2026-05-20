@@ -14,7 +14,6 @@ from tails_cloner.config import BRANDING, FONT_SIZE_LARGE, FONT_SIZE_MEDIUM, MIN
 from tails_cloner.controller import ApplicationController
 from tails_cloner.devices import MIN_INSTALLATION_SIZE_GB
 from tails_cloner.models import BlockDevice, SourceMode
-from tails_cloner.source import get_parent_disk_path
 
 
 class TailsClonerApp(tk.Tk):
@@ -838,6 +837,11 @@ class TailsClonerApp(tk.Tk):
                 device = d
                 break
 
+        if device and device.disabled_reason:
+            messagebox.showerror("Device cannot be selected", device.disabled_reason)
+            self._update_device_warnings_and_button()
+            return
+
         # Customize confirmation message based on device state
         button_text = self.clone_button.cget("text")
 
@@ -1002,22 +1006,14 @@ class TailsClonerApp(tk.Tk):
             self.versions_list.activate(index)
 
     def _sync_devices(self) -> None:
-        # Filter out the running Tails device when cloning from running Tails
-        running_device = self.controller.state.running_tails_device
+        # Keep source/running devices visible so the user understands why they
+        # cannot be selected; the controller marks them disabled and refuses
+        # them again at operation time.
+        self.controller.annotate_device_selection_state()
         devices = self.controller.state.devices
 
-        if self.controller.state.source_mode == SourceMode.RUNNING and running_device:
-            running_parent = get_parent_disk_path(running_device)
-            # Exclude the running source disk and all partitions on that disk.
-            devices = [
-                d for d in devices
-                if get_parent_disk_path(d.path) != running_parent
-            ]
-        elif self.controller.state.source_mode == SourceMode.ATTACHED:
-            devices = [d for d in devices if not self.controller.target_is_attached_live_source(d.path)]
-
         if self._upgrade_mode_enabled():
-            devices = [d for d in devices if d.has_tails]
+            devices = [d for d in devices if d.has_tails or d.disabled_reason]
         labels = {device.pretty_name: device.path for device in devices}
         snapshot = tuple(labels)
         if snapshot == self._last_devices_snapshot:
@@ -1057,6 +1053,12 @@ class TailsClonerApp(tk.Tk):
 
         warnings = []
         upgrade_mode = self._upgrade_mode_enabled()
+
+        if device.disabled_reason:
+            self.device_warning_label.config(text=device.disabled_reason)
+            self.device_status_label.config(text="Device is visible for context but cannot be selected as a target.", foreground="#a63636")
+            self.clone_button.config(text="Not selectable", state="disabled")
+            return
 
         # Check for various device issues (matching legacy installer behavior)
         if device.read_only:

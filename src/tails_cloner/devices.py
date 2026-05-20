@@ -71,7 +71,7 @@ class DeviceService:
     def __init__(self, run: callable = subprocess.run) -> None:
         self._run = run
 
-    def list_removable_devices(self) -> list[BlockDevice]:
+    def list_devices(self) -> list[BlockDevice]:
         result = self._run(
             ["lsblk", "--json", "--bytes", "--output", LSBLK_COLUMNS],
             check=True,
@@ -80,3 +80,7 @@ class DeviceService:
         )
         payload = json.loads(result.stdout)
         return parse_lsblk_json(payload)
+
+    def list_removable_devices(self) -> list[BlockDevice]:
+        """Backward-compatible alias; this now returns all disk devices."""
+        return self.list_devices()

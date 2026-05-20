@@ -41,7 +41,7 @@ class FakeVersionService:
 
 
 class FakeDeviceService:
-    def list_removable_devices(self):
+    def list_devices(self):
         return [
             BlockDevice(
                 path="/dev/sdb",
@@ -53,6 +53,10 @@ class FakeDeviceService:
                 removable=True,
             )
         ]
+
+
+    def list_removable_devices(self):
+        return self.list_devices()
 
 
 class FakeCloneService:
@@ -183,6 +187,57 @@ class ControllerTests(unittest.TestCase):
         controller.refresh_devices()
 
         self.assertEqual(controller.state.status_message, "Found 1 device(s).")
+
+
+    def test_refresh_devices_marks_running_device_visible_but_not_selectable(self) -> None:
+        state = AppState(running_tails_device="/dev/sdb1", running_tails_available=True, source_mode=SourceMode.RUNNING)
+        controller = ApplicationController(
+            state=state,
+            version_service=FakeVersionService(),
+            device_service=FakeDeviceService(),
+            clone_service=FakeCloneService(),
+            executor=ThreadPoolExecutor(max_workers=1),
+        )
+        self.addCleanup(controller.shutdown)
+
+        controller.refresh_devices()
+
+        self.assertEqual(controller.state.devices[0].path, "/dev/sdb")
+        self.assertTrue(controller.state.devices[0].is_running_system_device)
+        self.assertFalse(controller.state.devices[0].selectable)
+        self.assertIn("currently running Tails", controller.state.devices[0].disabled_reason)
+
+    def test_install_rejects_running_device_target(self) -> None:
+        clone_service = FakeCloneService()
+        state = AppState(running_tails_device="/dev/sdb1", running_tails_available=True, source_mode=SourceMode.LOCAL)
+        controller = ApplicationController(
+            state=state,
+            version_service=FakeVersionService(),
+            device_service=FakeDeviceService(),
+            clone_service=clone_service,
+            executor=ThreadPoolExecutor(max_workers=1),
+        )
+        self.addCleanup(controller.shutdown)
+
+        with self.assertRaisesRegex(RuntimeError, "currently running Tails"):
+            controller.clone_selected_image("/tmp/tails.img", "/dev/sdb")
+        self.assertEqual(clone_service.calls, [])
+
+    def test_upgrade_rejects_running_device_target(self) -> None:
+        clone_service = FakeCloneService()
+        state = AppState(running_tails_device="/dev/sdb1", running_tails_available=True, source_mode=SourceMode.LOCAL)
+        controller = ApplicationController(
+            state=state,
+            version_service=FakeVersionService(),
+            device_service=FakeDeviceService(),
+            clone_service=clone_service,
+            executor=ThreadPoolExecutor(max_workers=1),
+        )
+        self.addCleanup(controller.shutdown)
+
+        with self.assertRaisesRegex(RuntimeError, "currently running Tails"):
+            controller.upgrade_selected_image("/tmp/tails.img", "/dev/sdb2")
+        self.assertEqual(clone_service.upgrade_calls, [])
 
     def test_set_attached_live_source_records_validated_source(self) -> None:
         controller = ApplicationController(

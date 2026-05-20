@@ -56,6 +56,9 @@ class BlockDevice:
     has_tails: bool = False
     is_big_enough_for_installation: bool = True
     is_big_enough_for_upgrade: bool = True
+    is_running_system_device: bool = False
+    is_attached_source_device: bool = False
+    disabled_reason: str = ""
 
     @property
     def pretty_name(self) -> str:
@@ -64,7 +67,17 @@ class BlockDevice:
         removable_indicator = " (removable)" if self.removable else ""
         read_only_indicator = " (read-only)" if self.read_only else ""
         tails_indicator = " [Tails installed]" if self.has_tails else ""
-        return f"{self.path} · {self.size_label} · {vendor} {model}{removable_indicator}{read_only_indicator}{tails_indicator}".strip()
+        running_indicator = " [running Tails source]" if self.is_running_system_device else ""
+        source_indicator = " [attached source]" if self.is_attached_source_device else ""
+        disabled_indicator = " [not selectable]" if self.disabled_reason else ""
+        return (
+            f"{self.path} · {self.size_label} · {vendor} {model}"
+            f"{removable_indicator}{read_only_indicator}{tails_indicator}{running_indicator}{source_indicator}{disabled_indicator}"
+        ).strip()
+
+    @property
+    def selectable(self) -> bool:
+        return not self.disabled_reason
 
 
 @dataclass(slots=True)

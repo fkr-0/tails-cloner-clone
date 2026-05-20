@@ -81,7 +81,10 @@ class AppWindowClassTests(unittest.TestCase):
         app.controller = type(
             "Controller",
             (),
-            {"state": type("State", (), {"running_tails_device": "", "devices": [], "source_mode": object()})()},
+            {
+                "state": type("State", (), {"running_tails_device": "", "devices": [], "source_mode": object()})(),
+                "annotate_device_selection_state": lambda self: None,
+            },
         )()
         app.device_var = _FakeStringVar("")
         app.device_combo = {}

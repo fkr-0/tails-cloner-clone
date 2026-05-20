@@ -123,6 +123,32 @@ class ApplicationController:
         target_parent = get_parent_disk_path(target_path)
         return source_parent == target_parent
 
+    def target_is_running_system_device(self, target_path: str) -> bool:
+        """Return true when the target is the disk currently running Tails."""
+        if not self.state.running_tails_device:
+            return False
+        running_parent = get_parent_disk_path(self.state.running_tails_device)
+        target_parent = get_parent_disk_path(target_path)
+        return running_parent == target_parent
+
+    def annotate_device_selection_state(self) -> None:
+        """Mark source/running devices as visible but not selectable targets."""
+        for device in self.state.devices:
+            device.is_running_system_device = self.target_is_running_system_device(device.path)
+            device.is_attached_source_device = self.target_is_attached_live_source(device.path)
+            if device.is_running_system_device:
+                device.disabled_reason = "This is the device currently running Tails. It cannot be selected as a target."
+            elif device.is_attached_source_device:
+                device.disabled_reason = "This is the attached Tails source device. It cannot be selected as a target."
+            else:
+                device.disabled_reason = ""
+
+    def _ensure_target_is_selectable(self, device_path: str) -> None:
+        if self.target_is_running_system_device(device_path):
+            raise RuntimeError("Target device must not be the device currently running Tails.")
+        if self.target_is_attached_live_source(device_path):
+            raise RuntimeError("Target device must not be the attached live source device.")
+
     def shutdown(self) -> None:
         shutdown = getattr(self.executor, "shutdown", None)
         if shutdown is not None:
@@ -155,7 +181,8 @@ class ApplicationController:
         self.state.devices_loading = True
         self.state.status_message = "Scanning devices…"
         try:
-            self.state.devices = self.device_service.list_removable_devices()
+            self.state.devices = self.device_service.list_devices()
+            self.annotate_device_selection_state()
             if self.state.devices:
                 self.state.status_message = f"Found {len(self.state.devices)} device(s)."
             else:
@@ -206,6 +233,7 @@ class ApplicationController:
         """Install or reinstall an image to the target device with a whole-device write."""
         if self.state.source_mode == SourceMode.ATTACHED:
             raise RuntimeError("Attached live sources are only supported for persistence-preserving upgrades.")
+        self._ensure_target_is_selectable(device_path)
         actual_image_path = self._resolve_source_image_path(image_path, "installing")
         self.state.status_message = f"Installing {actual_image_path} to {device_path}…"
 
@@ -229,6 +257,7 @@ class ApplicationController:
             self.upgrade_selected_from_attached_live_source(device_path, progress_callback=progress_callback)
             return
 
+        self._ensure_target_is_selectable(device_path)
         actual_image_path = self._resolve_source_image_path(image_path, "upgrading")
         self.state.status_message = f"Upgrading {device_path} from {actual_image_path}; Persistent Storage will be preserved…"
 
@@ -249,8 +278,7 @@ class ApplicationController:
         """Upgrade from an attached live source device without rewriting target persistence."""
         if not self.state.attached_live_source_device:
             raise RuntimeError("No attached Tails live source has been selected.")
-        if self.target_is_attached_live_source(device_path):
-            raise RuntimeError("Target device must not be the attached live source device.")
+        self._ensure_target_is_selectable(device_path)
 
         source_device = get_parent_disk_path(self.state.attached_live_source_device)
         self.state.status_message = (
