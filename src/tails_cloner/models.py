@@ -8,6 +8,7 @@ class SourceMode(Enum):
     """Source mode for cloning."""
 
     RUNNING = "running"  # Clone from running Tails system
+    ATTACHED = "attached"  # Use an attached/mounted Tails live source
     LOCAL = "local"  # Use local ISO/IMG file
     REMOTE = "remote"  # Download remote version
 
@@ -86,3 +87,7 @@ class AppState:
     running_tails_version: str = ""
     running_tails_device: str = ""
     running_tails_available: bool = False
+    # Info about an attached/mounted Tails live source separate from this launcher OS
+    attached_live_source_device: str = ""
+    attached_live_source_mount: str = ""
+    attached_live_source_version: str = ""

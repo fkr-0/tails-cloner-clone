@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from concurrent.futures import Executor, ThreadPoolExecutor
+from pathlib import Path
 
 from tails_cloner.models import AppState, SourceMode, VersionAssets
-from tails_cloner.source import is_running_tails, get_running_tails_version, get_running_tails_device
+from tails_cloner.source import AttachedLiveSystemSource, get_parent_disk_path, is_running_tails, get_running_tails_version, get_running_tails_device
 
 
 """Application controller for Tails Cloner.
@@ -75,10 +76,52 @@ class ApplicationController:
         self.state.source_mode = mode
         if mode == SourceMode.RUNNING:
             self.state.status_message = f"Cloning from running Tails {self.state.running_tails_version}."
+        elif mode == SourceMode.ATTACHED:
+            if self.state.attached_live_source_device:
+                self.state.status_message = (
+                    f"Using attached Tails live source {self.state.attached_live_source_version or 'Unknown'} "
+                    f"from {self.state.attached_live_source_device}."
+                )
+            else:
+                self.state.status_message = "Choose and validate an attached Tails live source."
         elif mode == SourceMode.LOCAL:
             self.state.status_message = "Using local image file."
         elif mode == SourceMode.REMOTE:
             self.state.status_message = "Using remote downloaded version."
+
+    def set_attached_live_source(self, device_path: str, mount_point: str | Path) -> AttachedLiveSystemSource:
+        """Register an attached Tails live medium as an explicit source.
+
+        This source is separate from the OS running the app. It supports future
+        any-Linux workflows where a live Tails USB is mounted as the source and
+        another existing Tails device is upgraded as the target.
+        """
+        source = AttachedLiveSystemSource(device_path=device_path, mount_point=Path(mount_point))
+        source.validate()
+        self.state.attached_live_source_device = source.device_path
+        self.state.attached_live_source_mount = str(source.mount_point)
+        self.state.attached_live_source_version = source.version or "Unknown"
+        self.state.source_mode = SourceMode.ATTACHED
+        self.state.status_message = (
+            f"Using attached Tails live source {self.state.attached_live_source_version} "
+            f"from {self.state.attached_live_source_device}."
+        )
+        return source
+
+    def clear_attached_live_source(self) -> None:
+        """Clear the attached live source selection."""
+        self.state.attached_live_source_device = ""
+        self.state.attached_live_source_mount = ""
+        self.state.attached_live_source_version = ""
+        self.state.status_message = "Attached live source cleared."
+
+    def target_is_attached_live_source(self, target_path: str) -> bool:
+        """Return true when the target is the attached live source disk or partition."""
+        if not self.state.attached_live_source_device:
+            return False
+        source_parent = get_parent_disk_path(self.state.attached_live_source_device)
+        target_parent = get_parent_disk_path(target_path)
+        return source_parent == target_parent
 
     def shutdown(self) -> None:
         shutdown = getattr(self.executor, "shutdown", None)
@@ -161,6 +204,8 @@ class ApplicationController:
 
     def clone_selected_image(self, image_path: str | None, device_path: str, progress_callback=None) -> None:
         """Install or reinstall an image to the target device with a whole-device write."""
+        if self.state.source_mode == SourceMode.ATTACHED:
+            raise RuntimeError("Attached live sources are only supported for persistence-preserving upgrades.")
         actual_image_path = self._resolve_source_image_path(image_path, "installing")
         self.state.status_message = f"Installing {actual_image_path} to {device_path}…"
 
@@ -180,6 +225,10 @@ class ApplicationController:
 
     def upgrade_selected_image(self, image_path: str | None, device_path: str, progress_callback=None) -> None:
         """Upgrade an existing Tails target while preserving Persistent Storage."""
+        if self.state.source_mode == SourceMode.ATTACHED:
+            self.upgrade_selected_from_attached_live_source(device_path, progress_callback=progress_callback)
+            return
+
         actual_image_path = self._resolve_source_image_path(image_path, "upgrading")
         self.state.status_message = f"Upgrading {device_path} from {actual_image_path}; Persistent Storage will be preserved…"
 
@@ -195,3 +244,29 @@ class ApplicationController:
             progress_callback=on_progress,
         )
         self.state.status_message = "Upgrade completed successfully. Persistent Storage preserved."
+
+    def upgrade_selected_from_attached_live_source(self, device_path: str, progress_callback=None) -> None:
+        """Upgrade from an attached live source device without rewriting target persistence."""
+        if not self.state.attached_live_source_device:
+            raise RuntimeError("No attached Tails live source has been selected.")
+        if self.target_is_attached_live_source(device_path):
+            raise RuntimeError("Target device must not be the attached live source device.")
+
+        source_device = get_parent_disk_path(self.state.attached_live_source_device)
+        self.state.status_message = (
+            f"Upgrading {device_path} from attached Tails live source {source_device}; "
+            "Persistent Storage will be preserved…"
+        )
+
+        def on_progress(message: str) -> None:
+            self.state.last_clone_progress = message
+            self.state.status_message = f"Upgrading… {message}"
+            if progress_callback:
+                progress_callback(message)
+
+        self.clone_service.upgrade_from_device(
+            source_device=source_device,
+            device_path=device_path,
+            progress_callback=on_progress,
+        )
+        self.state.status_message = "Upgrade completed successfully from attached live source. Persistent Storage preserved."

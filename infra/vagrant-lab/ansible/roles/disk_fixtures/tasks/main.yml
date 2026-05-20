@@ -79,7 +79,7 @@
     set -euo pipefail
     d={{ target_fresh_disk }}
     parted -s "$d" mklabel gpt
-    parted -s "$d" mkpart primary fat32 1MiB 100%
+    parted -s "$d" mkpart primary fat32 1MiB 1024MiB
     partprobe "$d"
     udevadm settle
     for i in $(seq 1 20); do [ -b "${d}1" ] && break; sleep 0.5; done
@@ -87,7 +87,7 @@
   args:
     executable: /bin/bash
 
-- name: Create source-like disk marker
+- name: Create source-like not-running Tails live USB fixture
   shell: |
     set -euo pipefail
     d={{ source_disk }}
@@ -97,6 +97,12 @@
     udevadm settle
     for i in $(seq 1 20); do [ -b "${d}1" ] && break; sleep 0.5; done
     mkfs.vfat -n TAILS_SRC "${d}1"
+    mkdir -p {{ fixture_mount_root }}/source
+    mount "${d}1" {{ fixture_mount_root }}/source
+    mkdir -p {{ fixture_mount_root }}/source/live
+    echo '7.7.2-fixture-source' > {{ fixture_mount_root }}/source/live/Tails.version
+    sync
+    umount {{ fixture_mount_root }}/source
   args:
     executable: /bin/bash
 

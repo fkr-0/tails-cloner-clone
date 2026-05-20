@@ -9,6 +9,7 @@ from tails_cloner.upgrader import (
     find_partition,
     has_persistence_partition,
     upgrade_tails_system_partition,
+    upgrade_tails_system_partition_from_device,
 )
 
 
@@ -35,6 +36,12 @@ class FakeRunner:
                 payload = {
                     'blockdevices': [
                         {'children': [{'path': '/dev/loop7p1', 'fstype': 'vfat', 'label': 'TAILS'}]}
+                    ]
+                }
+            elif device == '/dev/sdc':
+                payload = {
+                    'blockdevices': [
+                        {'children': [{'path': '/dev/sdc1', 'fstype': 'vfat', 'label': 'TAILS'}]}
                     ]
                 }
             else:
@@ -79,3 +86,28 @@ def test_upgrade_tails_system_partition_uses_real_upgrader_path(tmp_path: Path) 
     assert ['blockdev', '--flushbufs', '/dev/sdb'] in runner.commands
     assert ['losetup', '-d', '/dev/loop7'] in runner.commands
     assert any('persistence partition still present' in message for message in progress)
+
+
+def test_upgrade_tails_system_partition_from_device_is_partition_scoped() -> None:
+    runner = FakeRunner()
+    progress: list[str] = []
+
+    upgrade_tails_system_partition_from_device('/dev/sdc', '/dev/sdb', runner=runner, progress_callback=progress.append)
+
+    assert ['dd', 'if=/dev/sdc1', 'of=/dev/sdb1', 'bs=4M', 'status=progress', 'conv=fsync'] in runner.commands
+    assert ['sync'] in runner.commands
+    assert ['blockdev', '--flushbufs', '/dev/sdb'] in runner.commands
+    assert not any(command[:1] == ['losetup'] for command in runner.commands)
+    assert any('Using source Tails system partition /dev/sdc1' in message for message in progress)
+    assert any('persistence partition still present' in message for message in progress)
+
+
+def test_upgrade_tails_system_partition_from_device_rejects_same_source_and_target() -> None:
+    runner = FakeRunner()
+
+    try:
+        upgrade_tails_system_partition_from_device('/dev/sdb', '/dev/sdb', runner=runner)
+    except RuntimeError as error:
+        assert 'Source and target devices must be different' in str(error)
+    else:
+        raise AssertionError('expected same source/target upgrade to fail')

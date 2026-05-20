@@ -9,7 +9,9 @@ from tails_cloner.source import (
     get_running_tails_device,
     get_running_tails_size_bytes,
     get_parent_disk_path,
+    AttachedLiveSystemSource,
     RunningLiveSystemSource,
+    SourceType,
 )
 
 
@@ -72,6 +74,46 @@ class ParentDiskPathTests(unittest.TestCase):
 
     def test_get_parent_disk_returns_input_for_disk(self) -> None:
         self.assertEqual(get_parent_disk_path("/dev/sdb"), "/dev/sdb")
+
+
+class AttachedLiveSystemSourceTests(unittest.TestCase):
+    def test_validate_succeeds_for_mounted_tails_like_live_medium(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            mount_point = Path(tmpdir)
+            (mount_point / "live").mkdir(parents=True)
+            (mount_point / "live" / "Tails.version").write_text("7.7.2\n", encoding="utf-8")
+            source = AttachedLiveSystemSource(device_path="/dev/sdb1", mount_point=mount_point)
+
+            source.validate()
+
+            self.assertEqual(source.source_type, SourceType.ATTACHED_LIVE_SYSTEM)
+            self.assertEqual(source.version, "7.7.2")
+            self.assertEqual(source.parent_device, "/dev/sdb")
+
+    def test_validate_fails_for_missing_tails_version(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            source = AttachedLiveSystemSource(device_path="/dev/sdb1", mount_point=Path(tmpdir))
+
+            with self.assertRaises(RuntimeError):
+                source.validate()
+
+    def test_validate_fails_for_non_device_path(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            mount_point = Path(tmpdir)
+            (mount_point / "live").mkdir(parents=True)
+            (mount_point / "live" / "Tails.version").write_text("7.7.2\n", encoding="utf-8")
+            source = AttachedLiveSystemSource(device_path="/tmp/source.img", mount_point=mount_point)
+
+            with self.assertRaises(ValueError):
+                source.validate()
+
+    def test_target_is_source_device_compares_parent_disk(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            source = AttachedLiveSystemSource(device_path="/dev/sdb1", mount_point=Path(tmpdir))
+
+            self.assertTrue(source.target_is_source_device("/dev/sdb"))
+            self.assertTrue(source.target_is_source_device("/dev/sdb2"))
+            self.assertFalse(source.target_is_source_device("/dev/sdc"))
 
 
 class RunningLiveSystemSourceTests(unittest.TestCase):

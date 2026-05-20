@@ -1,9 +1,11 @@
 import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from tails_cloner.controller import ApplicationController
-from tails_cloner.models import AppState, BlockDevice, VersionAssets
+from tails_cloner.models import AppState, BlockDevice, SourceMode, VersionAssets
 
 
 def wait_for(description: str, condition, timeout: float = 2.0, interval: float = 0.01):
@@ -57,6 +59,7 @@ class FakeCloneService:
     def __init__(self):
         self.calls = []
         self.upgrade_calls = []
+        self.upgrade_from_device_calls = []
 
     def clone_image(
         self,
@@ -78,6 +81,16 @@ class FakeCloneService:
         self.upgrade_calls.append((image_path, device_path))
         if progress_callback:
             progress_callback("partition upgrade done")
+
+    def upgrade_from_device(
+        self,
+        source_device: str,
+        device_path: str,
+        progress_callback=None,
+    ):
+        self.upgrade_from_device_calls.append((source_device, device_path))
+        if progress_callback:
+            progress_callback("source-device partition upgrade done")
 
 
 class ControllerTests(unittest.TestCase):
@@ -170,6 +183,124 @@ class ControllerTests(unittest.TestCase):
         controller.refresh_devices()
 
         self.assertEqual(controller.state.status_message, "Found 1 device(s).")
+
+    def test_set_attached_live_source_records_validated_source(self) -> None:
+        controller = ApplicationController(
+            state=AppState(),
+            version_service=FakeVersionService(),
+            device_service=FakeDeviceService(),
+            clone_service=FakeCloneService(),
+            executor=ThreadPoolExecutor(max_workers=1),
+        )
+        self.addCleanup(controller.shutdown)
+        with TemporaryDirectory() as tmpdir:
+            mount_point = Path(tmpdir)
+            (mount_point / "live").mkdir(parents=True)
+            (mount_point / "live" / "Tails.version").write_text("7.7.2\n", encoding="utf-8")
+
+            source = controller.set_attached_live_source("/dev/sdb1", mount_point)
+            self.assertEqual(source.version, "7.7.2")
+
+        self.assertEqual(controller.state.source_mode.value, "attached")
+        self.assertEqual(controller.state.attached_live_source_device, "/dev/sdb1")
+        self.assertEqual(controller.state.attached_live_source_version, "7.7.2")
+        self.assertIn("Using attached Tails live source 7.7.2", controller.state.status_message)
+
+    def test_attached_live_upgrade_uses_source_device_upgrade_service(self) -> None:
+        clone_service = FakeCloneService()
+        state = AppState(
+            source_mode=SourceMode.ATTACHED,
+            attached_live_source_device="/dev/sdb1",
+            attached_live_source_mount="/mnt/source",
+            attached_live_source_version="7.7.2",
+        )
+        controller = ApplicationController(
+            state=state,
+            version_service=FakeVersionService(),
+            device_service=FakeDeviceService(),
+            clone_service=clone_service,
+            executor=ThreadPoolExecutor(max_workers=1),
+        )
+        self.addCleanup(controller.shutdown)
+
+        controller.upgrade_selected_image(None, "/dev/sdc")
+
+        self.assertEqual(clone_service.upgrade_calls, [])
+        self.assertEqual(clone_service.upgrade_from_device_calls, [("/dev/sdb", "/dev/sdc")])
+        self.assertEqual(controller.state.last_clone_progress, "source-device partition upgrade done")
+        self.assertEqual(
+            controller.state.status_message,
+            "Upgrade completed successfully from attached live source. Persistent Storage preserved.",
+        )
+
+    def test_attached_live_upgrade_rejects_source_as_target(self) -> None:
+        clone_service = FakeCloneService()
+        state = AppState(
+            source_mode=SourceMode.ATTACHED,
+            attached_live_source_device="/dev/sdb1",
+        )
+        controller = ApplicationController(
+            state=state,
+            version_service=FakeVersionService(),
+            device_service=FakeDeviceService(),
+            clone_service=clone_service,
+            executor=ThreadPoolExecutor(max_workers=1),
+        )
+        self.addCleanup(controller.shutdown)
+
+        with self.assertRaises(RuntimeError):
+            controller.upgrade_selected_image(None, "/dev/sdb2")
+        self.assertEqual(clone_service.upgrade_from_device_calls, [])
+
+    def test_attached_live_install_is_rejected(self) -> None:
+        controller = ApplicationController(
+            state=AppState(source_mode=SourceMode.ATTACHED),
+            version_service=FakeVersionService(),
+            device_service=FakeDeviceService(),
+            clone_service=FakeCloneService(),
+            executor=ThreadPoolExecutor(max_workers=1),
+        )
+        self.addCleanup(controller.shutdown)
+
+        with self.assertRaises(RuntimeError):
+            controller.clone_selected_image(None, "/dev/sdc")
+
+    def test_attached_live_source_target_exclusion_uses_parent_disk(self) -> None:
+        controller = ApplicationController(
+            state=AppState(),
+            version_service=FakeVersionService(),
+            device_service=FakeDeviceService(),
+            clone_service=FakeCloneService(),
+            executor=ThreadPoolExecutor(max_workers=1),
+        )
+        self.addCleanup(controller.shutdown)
+        controller.state.attached_live_source_device = "/dev/sdb1"
+
+        self.assertTrue(controller.target_is_attached_live_source("/dev/sdb"))
+        self.assertTrue(controller.target_is_attached_live_source("/dev/sdb2"))
+        self.assertFalse(controller.target_is_attached_live_source("/dev/sdc"))
+
+    def test_clear_attached_live_source_resets_state(self) -> None:
+        state = AppState(
+            attached_live_source_device="/dev/sdb1",
+            attached_live_source_mount="/mnt/source",
+            attached_live_source_version="7.7.2",
+        )
+        controller = ApplicationController(
+            state=state,
+            version_service=FakeVersionService(),
+            device_service=FakeDeviceService(),
+            clone_service=FakeCloneService(),
+            executor=ThreadPoolExecutor(max_workers=1),
+        )
+        self.addCleanup(controller.shutdown)
+
+        controller.clear_attached_live_source()
+
+        self.assertEqual(controller.state.attached_live_source_device, "")
+        self.assertEqual(controller.state.attached_live_source_mount, "")
+        self.assertEqual(controller.state.attached_live_source_version, "")
+        self.assertEqual(controller.state.status_message, "Attached live source cleared.")
 
 
 if __name__ == "__main__":

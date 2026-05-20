@@ -11,7 +11,7 @@ from tails_cloner.creator import clone_image_to_device
 from tails_cloner.devices import DeviceService
 from tails_cloner.models import AppState, PostWriteOptions
 from tails_cloner.remote_index import RemoteVersionIndex
-from tails_cloner.upgrader import upgrade_tails_system_partition
+from tails_cloner.upgrader import upgrade_tails_system_partition, upgrade_tails_system_partition_from_device
 
 
 class VersionService:
@@ -45,6 +45,18 @@ class CloneService:
     ) -> None:
         upgrade_tails_system_partition(
             image_path=image_path,
+            target_device=device_path,
+            progress_callback=progress_callback,
+        )
+
+    def upgrade_from_device(
+        self,
+        source_device: str,
+        device_path: str,
+        progress_callback: Callable[[str], None] | None = None,
+    ) -> None:
+        upgrade_tails_system_partition_from_device(
+            source_device=source_device,
             target_device=device_path,
             progress_callback=progress_callback,
         )

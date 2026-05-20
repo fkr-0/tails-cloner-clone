@@ -90,6 +90,56 @@ def build_partition_upgrade_command(source_partition: str, target_partition: str
     ]
 
 
+def _upgrade_from_source_partition(
+    source_partition: str,
+    target_device: str,
+    *,
+    runner: RunCommand = run_command,
+    progress_callback: ProgressCallback | None = None,
+) -> None:
+    _emit(progress_callback, f'Checking persistence on {target_device}')
+    if not has_persistence_partition(target_device, runner):
+        raise RuntimeError(f'Target device has no persistence partition: {target_device}')
+
+    target_partition = find_partition(target_device, fstype='vfat', runner=runner)
+    _emit(progress_callback, f'Using target Tails system partition {target_partition}')
+
+    command = build_partition_upgrade_command(source_partition, target_partition)
+    _emit(progress_callback, 'Running partition-scoped Tails upgrade')
+    runner(command)
+    runner(['sync'])
+    runner(['blockdev', '--flushbufs', target_device])
+
+    if not has_persistence_partition(target_device, runner):
+        raise RuntimeError(f'Persistence partition disappeared after upgrade: {target_device}')
+    _emit(progress_callback, 'Tails system partition upgraded; persistence partition still present')
+
+
+def upgrade_tails_system_partition_from_device(
+    source_device: str,
+    target_device: str,
+    *,
+    runner: RunCommand = run_command,
+    progress_callback: ProgressCallback | None = None,
+) -> None:
+    """Upgrade an existing Tails target from another attached Tails live device.
+
+    This is the source-device counterpart to upgrade_tails_system_partition().
+    It never rewrites the whole target disk: only the target Tails system
+    partition is overwritten from the source live system partition.
+    """
+    if source_device == target_device:
+        raise RuntimeError('Source and target devices must be different for a persistence-preserving upgrade')
+    source_partition = find_partition(source_device, fstype='vfat', runner=runner)
+    _emit(progress_callback, f'Using source Tails system partition {source_partition}')
+    _upgrade_from_source_partition(
+        source_partition,
+        target_device,
+        runner=runner,
+        progress_callback=progress_callback,
+    )
+
+
 def upgrade_tails_system_partition(
     image_path: str | Path,
     target_device: str,
@@ -108,28 +158,18 @@ def upgrade_tails_system_partition(
     if not image.exists():
         raise FileNotFoundError(image)
 
-    _emit(progress_callback, f'Checking persistence on {target_device}')
-    if not has_persistence_partition(target_device, runner):
-        raise RuntimeError(f'Target device has no persistence partition: {target_device}')
-
-    target_partition = find_partition(target_device, fstype='vfat', runner=runner)
-    _emit(progress_callback, f'Using target Tails system partition {target_partition}')
-
     loopdev = attach_image(image, runner)
     _emit(progress_callback, f'Attached source image {image} as {loopdev}')
     try:
         source_partition = find_partition(loopdev, fstype='vfat', runner=runner)
-        command = build_partition_upgrade_command(source_partition, target_partition)
-        _emit(progress_callback, 'Running partition-scoped Tails upgrade')
-        runner(command)
-        runner(['sync'])
-        runner(['blockdev', '--flushbufs', target_device])
+        _upgrade_from_source_partition(
+            source_partition,
+            target_device,
+            runner=runner,
+            progress_callback=progress_callback,
+        )
     finally:
         try:
             detach_image(loopdev, runner)
         except subprocess.CalledProcessError as error:
             _emit(progress_callback, f'Warning: failed to detach {loopdev}: {error}')
-
-    if not has_persistence_partition(target_device, runner):
-        raise RuntimeError(f'Persistence partition disappeared after upgrade: {target_device}')
-    _emit(progress_callback, 'Tails system partition upgraded; persistence partition still present')

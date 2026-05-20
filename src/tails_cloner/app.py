@@ -54,6 +54,9 @@ class TailsClonerApp(tk.Tk):
         self.source_mode_var = tk.StringVar(value="local")
         self.running_tails_version_var = tk.StringVar()
         self.running_tails_device_var = tk.StringVar()
+        self.attached_source_device_var = tk.StringVar(value="")
+        self.attached_source_mount_var = tk.StringVar(value="")
+        self.attached_source_status_var = tk.StringVar(value="No attached live source selected.")
         self.upgrade_plan_var = tk.StringVar(value="Source: not selected\nTarget: not selected\nAction: not selected")
         self._device_labels: dict[str, str] = {}
         self._last_versions_snapshot: tuple[str, ...] = ()
@@ -175,9 +178,40 @@ class TailsClonerApp(tk.Tk):
             foreground="#555555",
         ).grid(row=3, column=0, columnspan=2, sticky="w", padx=(20, 0), pady=(4, 0))
 
+        # Attached live source option
+        self.source_attached_frame = ttk.Frame(source_frame)
+        self.source_attached_frame.grid(row=2, column=0, sticky="ew", pady=(10, 0))
+        self.source_attached_frame.columnconfigure(1, weight=1)
+        self.source_attached_radio = ttk.Radiobutton(
+            self.source_attached_frame,
+            text="Use attached Tails live source for upgrade",
+            value="attached",
+            variable=self.source_mode_var,
+            command=self._on_source_mode_changed,
+        )
+        self.source_attached_radio.grid(row=0, column=0, columnspan=3, sticky="w")
+        ttk.Label(self.source_attached_frame, text="Source device:", foreground="#666666").grid(row=1, column=0, sticky="w", padx=(20, 4), pady=(4, 0))
+        self.attached_source_device_entry = ttk.Entry(self.source_attached_frame, textvariable=self.attached_source_device_var)
+        self.attached_source_device_entry.grid(row=1, column=1, sticky="ew", pady=(4, 0))
+        ttk.Label(self.source_attached_frame, text="Mount point:", foreground="#666666").grid(row=2, column=0, sticky="w", padx=(20, 4), pady=(4, 0))
+        self.attached_source_mount_entry = ttk.Entry(self.source_attached_frame, textvariable=self.attached_source_mount_var)
+        self.attached_source_mount_entry.grid(row=2, column=1, sticky="ew", pady=(4, 0))
+        self.attached_source_validate_button = ttk.Button(
+            self.source_attached_frame,
+            text="Validate attached source",
+            command=self._validate_attached_live_source,
+        )
+        self.attached_source_validate_button.grid(row=1, column=2, rowspan=2, sticky="ns", padx=(8, 0), pady=(4, 0))
+        ttk.Label(
+            self.source_attached_frame,
+            textvariable=self.attached_source_status_var,
+            foreground="#666666",
+            wraplength=520,
+        ).grid(row=3, column=0, columnspan=3, sticky="w", padx=(20, 0), pady=(4, 0))
+
         # Local file source option
         self.source_local_frame = ttk.Frame(source_frame)
-        self.source_local_frame.grid(row=2, column=0, sticky="ew", pady=(10, 0))
+        self.source_local_frame.grid(row=3, column=0, sticky="ew", pady=(10, 0))
         self.source_local_frame.columnconfigure(1, weight=1)
         self.source_local_radio = ttk.Radiobutton(
             self.source_local_frame,
@@ -477,6 +511,13 @@ class TailsClonerApp(tk.Tk):
                 f"Source device: {self.controller.state.running_tails_device or 'unknown'}\n"
                 "Persistence is not cloned."
             )
+        elif mode == SourceMode.ATTACHED:
+            self.source_details_var.set(
+                f"Attached live source\nVersion: {self.controller.state.attached_live_source_version or 'unknown'}\n"
+                f"Source device: {self.controller.state.attached_live_source_device or 'not selected'}\n"
+                f"Mount point: {self.controller.state.attached_live_source_mount or 'not selected'}\n"
+                "Only persistence-preserving upgrade is supported."
+            )
         elif mode == SourceMode.REMOTE:
             self.source_details_var.set(
                 f"Remote version source\nSelected version: {self.controller.state.selected_version or 'none'}\n"
@@ -495,6 +536,11 @@ class TailsClonerApp(tk.Tk):
             self.tab2_source_var.set(
                 f"Source: running Tails {self.controller.state.running_tails_version or 'unknown'} "
                 f"from {self.controller.state.running_tails_device or 'unknown'}"
+            )
+        elif self.controller.state.source_mode == SourceMode.ATTACHED:
+            self.tab2_source_var.set(
+                f"Source: attached Tails live source {self.controller.state.attached_live_source_version or 'unknown'} "
+                f"from {self.controller.state.attached_live_source_device or 'not selected'}"
             )
         else:
             self.tab2_source_var.set(f"Source: {self.image_path_var.get().strip() or 'not selected'}")
@@ -705,10 +751,28 @@ class TailsClonerApp(tk.Tk):
         mode_str = self.source_mode_var.get()
         if mode_str == "running":
             self.controller.set_source_mode(SourceMode.RUNNING)
+        elif mode_str == "attached":
+            self.controller.set_source_mode(SourceMode.ATTACHED)
+            self.action_mode_var.set("upgrade")
         elif mode_str == "local":
             self.controller.set_source_mode(SourceMode.LOCAL)
         elif mode_str == "remote":
             self.controller.set_source_mode(SourceMode.REMOTE)
+
+    def _validate_attached_live_source(self) -> None:
+        device_path = self.attached_source_device_var.get().strip()
+        mount_point = self.attached_source_mount_var.get().strip()
+        if not device_path or not mount_point:
+            messagebox.showerror("Missing attached source", "Enter both the source device and its mount point.")
+            return
+        try:
+            source = self.controller.set_attached_live_source(device_path, mount_point)
+            self.attached_source_status_var.set(f"Validated attached Tails {source.version or 'unknown'} from {device_path}")
+            self.action_mode_var.set("upgrade")
+            self._sync_devices()
+        except Exception as error:  # noqa: BLE001 - visible UI feedback
+            self.attached_source_status_var.set(f"Attached source validation failed: {error}")
+            messagebox.showerror("Attached source validation failed", str(error))
 
     def _download_selected_remote_image(self) -> None:
         img_url = self.controller.state.selected_image_url.strip()
@@ -751,7 +815,7 @@ class TailsClonerApp(tk.Tk):
 
         # Get image path or None if using running Tails
         image_path = None
-        if self.controller.state.source_mode != SourceMode.RUNNING:
+        if self.controller.state.source_mode not in {SourceMode.RUNNING, SourceMode.ATTACHED}:
             image_path = self.image_path_var.get().strip()
             if not image_path:
                 if self.controller.state.source_mode == SourceMode.REMOTE:
@@ -759,6 +823,9 @@ class TailsClonerApp(tk.Tk):
                 else:
                     messagebox.showerror("Missing image", "Choose a local ISO or IMG file before cloning.")
                 return
+        elif self.controller.state.source_mode == SourceMode.ATTACHED and not self.controller.state.attached_live_source_device:
+            messagebox.showerror("Missing attached source", "Validate an attached Tails live source before upgrading.")
+            return
 
         if not device_path:
             messagebox.showerror("Missing device", "Choose a device before cloning.")
@@ -777,6 +844,11 @@ class TailsClonerApp(tk.Tk):
         # Get source description for confirmation
         if self.controller.state.source_mode == SourceMode.RUNNING:
             source_desc = f"running Tails {self.controller.state.running_tails_version}"
+        elif self.controller.state.source_mode == SourceMode.ATTACHED:
+            source_desc = (
+                f"attached Tails live source {self.controller.state.attached_live_source_version or 'unknown'} "
+                f"from {self.controller.state.attached_live_source_device or 'not selected'}"
+            )
         else:
             source_desc = Path(image_path).name
 
@@ -883,10 +955,21 @@ class TailsClonerApp(tk.Tk):
             self.source_running_radio.state(["!disabled"])
         else:
             self.source_running_radio.state(["disabled"])
-        if current_mode == SourceMode.LOCAL:
+        if current_mode == SourceMode.ATTACHED:
+            self.source_mode_var.set("attached")
+        elif current_mode == SourceMode.LOCAL:
             self.source_mode_var.set("local")
         elif current_mode == SourceMode.REMOTE:
             self.source_mode_var.set("remote")
+
+        attached_widgets = [
+            self.attached_source_device_entry,
+            self.attached_source_mount_entry,
+            self.attached_source_validate_button,
+        ]
+        attached_state = "normal" if current_mode == SourceMode.ATTACHED else "disabled"
+        for widget in attached_widgets:
+            widget.state(["!disabled"] if attached_state == "normal" else ["disabled"])
 
         if current_mode == SourceMode.LOCAL:
             self.image_entry.state(["!disabled"])
@@ -930,6 +1013,8 @@ class TailsClonerApp(tk.Tk):
                 d for d in devices
                 if get_parent_disk_path(d.path) != running_parent
             ]
+        elif self.controller.state.source_mode == SourceMode.ATTACHED:
+            devices = [d for d in devices if not self.controller.target_is_attached_live_source(d.path)]
 
         if self._upgrade_mode_enabled():
             devices = [d for d in devices if d.has_tails]

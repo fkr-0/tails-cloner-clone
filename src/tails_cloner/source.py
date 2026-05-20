@@ -11,6 +11,7 @@ from pathlib import Path
 
 class SourceType(Enum):
     RUNNING_TAILS = "running_tails"
+    ATTACHED_LIVE_SYSTEM = "attached_live_system"
     LOCAL_IMAGE = "local_image"
     REMOTE_IMAGE = "remote_image"
 
@@ -117,6 +118,59 @@ class LocalImageSource:
             raise FileNotFoundError(str(self.path))
         if not self.path.is_file():
             raise IsADirectoryError(str(self.path))
+
+
+@dataclass(frozen=True, slots=True)
+class AttachedLiveSystemSource:
+    """Represents a mounted Tails live medium that is not necessarily this launcher OS."""
+
+    device_path: str
+    mount_point: Path
+
+    @property
+    def source_type(self) -> SourceType:
+        return SourceType.ATTACHED_LIVE_SYSTEM
+
+    @property
+    def parent_device(self) -> str:
+        return get_parent_disk_path(self.device_path)
+
+    @property
+    def live_path(self) -> Path:
+        return self.mount_point / "live"
+
+    @property
+    def version_file(self) -> Path:
+        return self.live_path / "Tails.version"
+
+    @property
+    def version(self) -> str | None:
+        try:
+            if self.version_file.is_file():
+                return self.version_file.read_text(encoding="utf-8").strip() or None
+        except OSError:
+            return None
+        return None
+
+    def validate(self) -> None:
+        if not self.device_path.startswith("/dev/"):
+            raise ValueError(f"Live medium source must be a block-device path, got: {self.device_path}")
+        if not self.mount_point.exists():
+            raise RuntimeError(f"Live medium mount point {self.mount_point} does not exist.")
+        if self.version is None:
+            raise RuntimeError(f"Mounted live medium does not look like Tails: missing {self.version_file}")
+
+    def target_is_source_device(self, target_path: str) -> bool:
+        return get_parent_disk_path(target_path) == self.parent_device
+
+    def get_liveos_path(self) -> Path:
+        return self.live_path
+
+    def get_iso_path(self) -> Path | None:
+        iso_path = self.live_path / "Tails.iso"
+        if iso_path.exists():
+            return iso_path
+        return None
 
 
 @dataclass(frozen=True, slots=True)

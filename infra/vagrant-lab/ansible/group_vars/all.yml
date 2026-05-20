@@ -1,20 +1,15 @@
----
 lab_profile: default
 fixture_mount_root: /opt/tails-cloner-fixtures
 fixture_state_file: /opt/tails-cloner-fixtures/fixture-state.json
-# Compatibility path used by lab scripts. Provisioning keeps this as a symlink
-# into tails_artifacts_cache_dir so multi-GB Tails images survive VM destroy/recreate.
 tails_artifacts_dir: /opt/tails-cloner-fixtures/tails-images
-# Host-synced cache through the repo mount; ignored by git via .cache/.
 tails_artifacts_cache_dir: /workspace/tails-cloner/.cache/vagrant-lab/tails-images
-# Set to require after filling the pinned sha256 values below.
-tails_artifact_checksum_policy: warn
+tails_artifact_checksum_policy: require
 tails_test_artifacts:
-  - version: 7.7.1
-    filename: tails-amd64-7.7.1.img
-    url: https://iso-history.tails.boum.org/tails-amd64-7.7.1/tails-amd64-7.7.1.img
-    sha256: ""
-  - version: 7.7.2
-    filename: tails-amd64-7.7.2.img
-    url: https://iso-history.tails.boum.org/tails-amd64-7.7.2/tails-amd64-7.7.2.img
-    sha256: ""
+- version: 7.7.1
+  filename: tails-amd64-7.7.1.img
+  url: https://iso-history.tails.boum.org/tails-amd64-7.7.1/tails-amd64-7.7.1.img
+  sha256: 280cb23ca3c1bd481d3bb67e32e133ddef3db99743b7e921cb7c73c9a929a5a4
+- version: 7.7.2
+  filename: tails-amd64-7.7.2.img
+  url: https://iso-history.tails.boum.org/tails-amd64-7.7.2/tails-amd64-7.7.2.img
+  sha256: d66e4a103d5974404e26391923ef69bd79bee9254276d58ef23ab6dda0c25d0e
