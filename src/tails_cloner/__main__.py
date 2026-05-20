@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 from collections.abc import Callable, Sequence
 
 from tails_cloner.app import TailsClonerApp
+from tails_cloner.cli import looks_like_cli_invocation, main as cli_main
 from tails_cloner.config import DEFAULT_REMOTE_INDEX_URL
 from tails_cloner.controller import ApplicationController
 from tails_cloner.creator import clone_image_to_device
@@ -96,6 +98,9 @@ def build_argument_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    if argv is not None and looks_like_cli_invocation(argv):
+        return cli_main(argv)
+
     parser = build_argument_parser()
     args = parser.parse_args(argv)
 
