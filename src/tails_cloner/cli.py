@@ -293,9 +293,36 @@ def build_cli_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _normalize_global_options(argv: Sequence[str] | None) -> list[str] | None:
+    """Accept global flags before or after subcommands for CLI ergonomics."""
+    if argv is None:
+        return None
+    args = list(argv)
+    normalized: list[str] = []
+    remaining: list[str] = []
+    index = 0
+    while index < len(args):
+        value = args[index]
+        if value == "--json":
+            normalized.append(value)
+            index += 1
+            continue
+        if value == "--remote-index-url":
+            normalized.extend(args[index:index + 2])
+            index += 2
+            continue
+        if value.startswith("--remote-index-url="):
+            normalized.append(value)
+            index += 1
+            continue
+        remaining.append(value)
+        index += 1
+    return normalized + remaining
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_cli_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(_normalize_global_options(argv))
     return args.func(args)
 
 

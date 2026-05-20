@@ -98,11 +98,12 @@ def build_argument_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    if argv is not None and looks_like_cli_invocation(argv):
-        return cli_main(argv)
+    effective_argv = list(sys.argv[1:] if argv is None else argv)
+    if looks_like_cli_invocation(effective_argv):
+        return cli_main(effective_argv)
 
     parser = build_argument_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(effective_argv)
 
     controller = ApplicationController(
         state=AppState(
