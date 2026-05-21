@@ -11,3 +11,4 @@ dist/
 tails_issue_fix/
 machines/
 out/
+*.log

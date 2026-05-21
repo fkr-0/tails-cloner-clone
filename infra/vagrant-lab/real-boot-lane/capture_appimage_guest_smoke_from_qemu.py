@@ -5,6 +5,7 @@ import argparse
 import json
 import subprocess
 import sys
+import os
 import tempfile
 import time
 from pathlib import Path
@@ -29,6 +30,33 @@ DEFAULT_SERIAL_LOG = LANE_DIR / 'out' / 'serial-logs' / 'appimage-guest-smoke.lo
 MARKER = 'TAILS_CLONER_APPIMAGE_SMOKE='
 DEFAULT_SHARE_TAG = 'tailsclonerappimage'
 DEFAULT_MOUNT_POINT = '/mnt/tailscloner-appimage'
+DEFAULT_LOCK_FILE = LANE_DIR / 'out' / 'appimage-guest-smoke.lock'
+
+
+
+class CaptureLock:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.acquired = False
+
+    def __enter__(self) -> 'CaptureLock':
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            fd = os.open(str(self.path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError as exc:
+            existing = self.path.read_text(errors='replace') if self.path.exists() else ''
+            raise RuntimeError(f'AppImage Tails capture already running or stale lock exists: {self.path} {existing!r}') from exc
+        with os.fdopen(fd, 'w') as handle:
+            handle.write(f'pid={os.getpid()}\n')
+        self.acquired = True
+        return self
+
+    def __exit__(self, _exc_type: object, _exc: object, _tb: object) -> None:
+        if self.acquired:
+            try:
+                self.path.unlink()
+            except FileNotFoundError:
+                pass
 
 
 def read_marker(serial_log: Path) -> str | None:
@@ -98,9 +126,48 @@ def capture_appimage_smoke(
     appimage: Path | None,
     prepare: bool,
     extra_drives: list[Path],
+    lock_file: Path = DEFAULT_LOCK_FILE,
 ) -> dict[str, Any]:
     if prepare:
         prepare_share(share_dir, appimage=appimage, share_tag=share_tag, mount_point=mount_point)
+    lock_context = CaptureLock(lock_file) if not dry_run else None
+    if lock_context is not None:
+        lock_context.__enter__()
+    try:
+        return _capture_appimage_smoke_unlocked(
+            image=image,
+            wait_timeout=wait_timeout,
+            memory_mb=memory_mb,
+            cpus=cpus,
+            share_dir=share_dir,
+            share_tag=share_tag,
+            mount_point=mount_point,
+            serial_log=serial_log,
+            dry_run=dry_run,
+            headless=headless,
+            extra_drives=extra_drives,
+            prepared_share=prepare,
+        )
+    finally:
+        if lock_context is not None:
+            lock_context.__exit__(None, None, None)
+
+
+def _capture_appimage_smoke_unlocked(
+    *,
+    image: Path,
+    wait_timeout: int,
+    memory_mb: int,
+    cpus: int,
+    share_dir: Path,
+    share_tag: str,
+    mount_point: str,
+    serial_log: Path,
+    dry_run: bool,
+    headless: bool,
+    extra_drives: list[Path],
+    prepared_share: bool,
+) -> dict[str, Any]:
     with tempfile.TemporaryDirectory(prefix='tails-appimage-smoke-capture-') as tmpdir:
         tmp = Path(tmpdir)
         qmp_socket = tmp / 'qmp.sock'
@@ -130,7 +197,7 @@ def capture_appimage_smoke(
             'share_tag': share_tag,
             'mount_point': mount_point,
             'headless': headless,
-            'prepared_share': prepare,
+            'prepared_share': prepared_share,
             'guest_command': guest_command_hint(share_tag, mount_point),
             'command': command,
         }
@@ -160,9 +227,11 @@ def capture_appimage_smoke(
                 process.kill()
                 stdout, stderr = process.communicate(timeout=15)
         success = bool(marker and validator_result and validator_result.get('valid'))
+        result_status = 'passed' if success else ('marker-invalid' if marker else 'pending-no-marker')
         return {
             **base,
             'success': success,
+            'result_status': result_status,
             'dry_run': False,
             'qmp_status': qmp_status,
             'qmp_quit': qmp_quit,
@@ -186,6 +255,7 @@ def main() -> int:
     parser.add_argument('--share-tag', default=DEFAULT_SHARE_TAG)
     parser.add_argument('--mount-point', default=DEFAULT_MOUNT_POINT)
     parser.add_argument('--serial-log', type=Path, default=DEFAULT_SERIAL_LOG)
+    parser.add_argument('--lock-file', type=Path, default=DEFAULT_LOCK_FILE)
     parser.add_argument('--appimage', type=Path)
     parser.add_argument('--extra-drive', dest='extra_drives', action='append', type=Path, default=[])
     parser.add_argument('--interactive-display', action='store_true', help='Use GTK display instead of headless serial-only QEMU.')
@@ -210,6 +280,7 @@ def main() -> int:
         appimage=args.appimage,
         prepare=not args.no_prepare_share,
         extra_drives=args.extra_drives,
+        lock_file=args.lock_file,
     )
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0 if result['success'] else 1

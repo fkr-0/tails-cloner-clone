@@ -12,9 +12,12 @@ Options:
   --extra-drive PATH     Attach an additional raw drive snapshot=on. May be repeated.
   --boot-usb             Attach the boot image as USB mass storage instead of virtio.
                          This matches Tails' live-media=removable boot expectation.
+  --writable-boot        Do not use snapshot=on for the boot image.
+                         Only use this with disposable/copy images.
   --qmp UNIX_SOCKET      Enable QMP control socket at UNIX_SOCKET.
   --pidfile PATH         Write the QEMU process id to PATH.
   --serial-log PATH      Write guest serial output to PATH instead of stdio.
+  --serial-socket PATH   Expose guest serial as a UNIX socket instead of a log file.
   --share-dir PATH,TAG   Expose a host directory to the guest with virtio-9p. May be repeated.
   --no-network           Disable qemu user networking.
   -h, --help             Show this help.
@@ -30,10 +33,12 @@ DRY_RUN=0
 HEADLESS=0
 NETWORK=1
 BOOT_USB=0
+WRITABLE_BOOT=0
 TIMEOUT_SEC="${TAILS_QEMU_TIMEOUT_SEC:-}"
 QMP_SOCKET=""
 PIDFILE=""
 SERIAL_LOG=""
+SERIAL_SOCKET=""
 SHARE_DIRS=()
 EXTRA_DRIVES=()
 POSITIONAL=()
@@ -68,6 +73,10 @@ while [[ $# -gt 0 ]]; do
       BOOT_USB=1
       shift
       ;;
+    --writable-boot)
+      WRITABLE_BOOT=1
+      shift
+      ;;
     --qmp)
       if [[ $# -lt 2 ]]; then
         echo "Missing value for --qmp" >&2
@@ -90,6 +99,14 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       SERIAL_LOG="$2"
+      shift 2
+      ;;
+    --serial-socket)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --serial-socket" >&2
+        exit 1
+      fi
+      SERIAL_SOCKET="$2"
       shift 2
       ;;
     --share-dir)
@@ -166,6 +183,14 @@ done
 if [[ -n "$SERIAL_LOG" ]]; then
   mkdir -p "$(dirname "$SERIAL_LOG")"
 fi
+if [[ -n "$SERIAL_SOCKET" ]]; then
+  mkdir -p "$(dirname "$SERIAL_SOCKET")"
+  rm -f "$SERIAL_SOCKET"
+fi
+if [[ -n "$SERIAL_LOG" && -n "$SERIAL_SOCKET" ]]; then
+  echo "Use only one of --serial-log or --serial-socket" >&2
+  exit 1
+fi
 
 # Keep defaults conservative for low-space hosts.
 MEMORY_MB="${TAILS_QEMU_MEMORY_MB:-4096}"
@@ -186,14 +211,20 @@ QEMU_CMD=(
   -smp "$CPUS"
 )
 
+if [[ "$WRITABLE_BOOT" -eq 1 ]]; then
+  BOOT_SNAPSHOT="off"
+else
+  BOOT_SNAPSHOT="on"
+fi
+
 if [[ "$BOOT_USB" -eq 1 ]]; then
   QEMU_CMD+=(
     -device qemu-xhci,id=xhci
-    -drive "file=$IMG_PATH,format=raw,if=none,id=bootdisk,snapshot=on"
+    -drive "file=$IMG_PATH,format=raw,if=none,id=bootdisk,snapshot=$BOOT_SNAPSHOT"
     -device usb-storage,drive=bootdisk,bootindex=0,removable=on
   )
 else
-  QEMU_CMD+=(-drive "file=$IMG_PATH,format=raw,if=virtio,snapshot=on")
+  QEMU_CMD+=(-drive "file=$IMG_PATH,format=raw,if=virtio,snapshot=$BOOT_SNAPSHOT")
 fi
 
 QEMU_CMD+=(-boot order=c)
@@ -208,16 +239,16 @@ fi
 
 if [[ "$HEADLESS" -eq 1 ]]; then
   QEMU_CMD+=(-display none)
-  if [[ -n "$SERIAL_LOG" ]]; then
-    QEMU_CMD+=(-serial "file:$SERIAL_LOG")
-  else
-    QEMU_CMD+=(-serial mon:stdio)
-  fi
 else
   QEMU_CMD+=(-display gtk)
-  if [[ -n "$SERIAL_LOG" ]]; then
-    QEMU_CMD+=(-serial "file:$SERIAL_LOG")
-  fi
+fi
+
+if [[ -n "$SERIAL_SOCKET" ]]; then
+  QEMU_CMD+=(-serial "unix:$SERIAL_SOCKET,server=on,wait=off")
+elif [[ -n "$SERIAL_LOG" ]]; then
+  QEMU_CMD+=(-serial "file:$SERIAL_LOG")
+elif [[ "$HEADLESS" -eq 1 ]]; then
+  QEMU_CMD+=(-serial mon:stdio)
 fi
 
 if [[ "$NETWORK" -eq 1 ]]; then
