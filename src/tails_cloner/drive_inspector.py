@@ -10,7 +10,7 @@ from typing import Any
 
 from tails_cloner.source import get_parent_disk_path, get_running_tails_device, is_running_tails
 
-LSBLK_INSPECT_COLUMNS = "PATH,TYPE,FSTYPE,LABEL,PTTYPE,SIZE,MOUNTPOINTS"
+LSBLK_INSPECT_COLUMNS = "PATH,TYPE,FSTYPE,LABEL,PARTLABEL,PTTYPE,SIZE,MOUNTPOINTS"
 RunCommand = Callable[..., subprocess.CompletedProcess[str]]
 
 
@@ -28,7 +28,10 @@ class DriveTailsFacts:
 
 def _run_json(cmd: list[str], run: RunCommand) -> dict[str, Any]:
     result = run(cmd, check=True, text=True, capture_output=True)
-    return json.loads(result.stdout)
+    payload = json.loads(result.stdout)
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"Expected JSON object from {' '.join(cmd)}")
+    return payload
 
 
 def _collect_partitions(layout: dict[str, Any]) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
@@ -152,8 +155,15 @@ def read_tails_version_from_unmounted_partition(
 
 
 def _is_persistence_partition(part: dict[str, Any]) -> bool:
-    label = str(part.get("label") or "").lower()
-    return label in {"persistence", "tailsdata_unlocked"}
+    labels = {
+        str(part.get("label") or "").casefold(),
+        str(part.get("partlabel") or "").casefold(),
+    }
+    fstype = str(part.get("fstype") or "").casefold()
+    return bool(labels & {"persistence", "tailsdata", "tailsdata_unlocked"}) and fstype in {
+        "crypto_luks",
+        "ext4",
+    }
 
 
 def inspect_drive_tails_facts(

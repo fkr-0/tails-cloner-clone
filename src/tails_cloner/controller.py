@@ -5,8 +5,14 @@ from pathlib import Path
 
 from tails_cloner.models import AppState, BlockDevice, SourceMode, VersionAssets
 from tails_cloner.planner import OperationKind, OperationPlan, OperationSource, plan_operation
-from tails_cloner.source import AttachedLiveSystemSource, get_parent_disk_path, is_running_tails, get_running_tails_version, get_running_tails_device
-
+from tails_cloner.source import (
+    AttachedLiveSystemSource,
+    get_parent_disk_path,
+    get_running_tails_device,
+    get_running_tails_version,
+    is_running_tails,
+)
+from tails_cloner.verification import verify_sha256
 
 """Application controller for Tails Cloner.
 
@@ -141,6 +147,10 @@ class ApplicationController:
                 device.disabled_reason = "This is the device currently running Tails. It cannot be selected as a target."
             elif device.is_attached_source_device:
                 device.disabled_reason = "This is the attached Tails source device. It cannot be selected as a target."
+            elif device.is_host_system_device:
+                device.disabled_reason = (
+                    "This device contains filesystems used by the currently running operating system."
+                )
             else:
                 device.disabled_reason = ""
 
@@ -153,6 +163,14 @@ class ApplicationController:
             if device.path == device_path or device.path == target_parent:
                 return device
         raise RuntimeError(f"Target device is not present in the current device list: {device_path}")
+
+    @staticmethod
+    def _local_image_size(image_path: str) -> int:
+        try:
+            candidate = Path(image_path)
+            return candidate.stat().st_size if candidate.is_file() else 0
+        except OSError:
+            return 0
 
     def _operation_source(self, image_path: str | None = None) -> OperationSource:
         if self.state.source_mode == SourceMode.RUNNING:
@@ -173,7 +191,12 @@ class ApplicationController:
                 path=image_path or self.state.selected_image_url,
                 version=self.state.selected_version,
             )
-        return OperationSource(type="image", path=image_path or "")
+        local_path = image_path or ""
+        return OperationSource(
+            type="image",
+            path=local_path,
+            size_bytes=self._local_image_size(local_path) if local_path else 0,
+        )
 
     def plan_target_operation(self, operation: OperationKind, device_path: str, image_path: str | None = None) -> OperationPlan:
         target = self._find_target_device(device_path)
@@ -248,6 +271,23 @@ class ApplicationController:
         self.state.selected_signature_url = entry.sig_url
         self.state.selected_checksum_url = entry.sha256_url
 
+    def _verify_recorded_image_integrity(self, image_path: str) -> None:
+        verified_path = self.state.verified_image_path
+        verified_digest = self.state.verified_image_sha256
+        if not verified_path or not verified_digest:
+            return
+        if Path(image_path).resolve() != Path(verified_path).resolve():
+            return
+
+        self.state.status_message = f"Re-verifying downloaded image {image_path} before writing…"
+        try:
+            verify_sha256(image_path, verified_digest)
+        except (OSError, ValueError) as error:
+            self.state.status_message = f"Image integrity verification failed: {error}"
+            raise RuntimeError(
+                "The previously verified downloaded image changed or became unreadable before writing."
+            ) from error
+
     def _resolve_source_image_path(self, image_path: str | None, operation_name: str) -> str:
         """Resolve the image used for install/reinstall/upgrade operations."""
         actual_image_path = image_path
@@ -267,6 +307,7 @@ class ApplicationController:
             self.state.status_message = "Error: No image path specified."
             raise ValueError(f"Image path is required when not {operation_name} from running Tails")
 
+        self._verify_recorded_image_integrity(actual_image_path)
         return actual_image_path
 
     def clone_selected_image(self, image_path: str | None, device_path: str, progress_callback=None) -> None:
@@ -296,10 +337,15 @@ class ApplicationController:
         if self.state.source_mode == SourceMode.ATTACHED:
             self.upgrade_selected_from_attached_live_source(device_path, progress_callback=progress_callback)
             return
+        if self.state.source_mode == SourceMode.RUNNING:
+            self.upgrade_selected_from_running_live_source(device_path, progress_callback=progress_callback)
+            return
 
         self._require_valid_target_plan(OperationKind.UPGRADE, device_path, image_path)
         actual_image_path = self._resolve_source_image_path(image_path, "upgrading")
-        self.state.status_message = f"Upgrading {device_path} from {actual_image_path}; Persistent Storage will be preserved…"
+        self.state.status_message = (
+            f"Upgrading {device_path} from {actual_image_path}; existing Persistent Storage, if present, will be preserved…"
+        )
 
         def on_progress(message: str) -> None:
             self.state.last_clone_progress = message
@@ -312,18 +358,18 @@ class ApplicationController:
             device_path=device_path,
             progress_callback=on_progress,
         )
-        self.state.status_message = "Upgrade completed successfully. Persistent Storage preserved."
+        self.state.status_message = "Upgrade completed successfully. Existing Persistent Storage, if present, was preserved."
 
-    def upgrade_selected_from_attached_live_source(self, device_path: str, progress_callback=None) -> None:
-        """Upgrade from an attached live source device without rewriting target persistence."""
-        if not self.state.attached_live_source_device:
-            raise RuntimeError("No attached Tails live source has been selected.")
+    def upgrade_selected_from_running_live_source(self, device_path: str, progress_callback=None) -> None:
+        """Upgrade from the live medium currently running this Tails session."""
+        if not self.state.running_tails_device:
+            raise RuntimeError("The running Tails source device could not be determined.")
         self._require_valid_target_plan(OperationKind.UPGRADE, device_path)
 
-        source_device = get_parent_disk_path(self.state.attached_live_source_device)
+        source_device = get_parent_disk_path(self.state.running_tails_device)
         self.state.status_message = (
-            f"Upgrading {device_path} from attached Tails live source {source_device}; "
-            "Persistent Storage will be preserved…"
+            f"Upgrading {device_path} from running Tails source {source_device}; "
+            "existing Persistent Storage, if present, will be preserved…"
         )
 
         def on_progress(message: str) -> None:
@@ -337,4 +383,35 @@ class ApplicationController:
             device_path=device_path,
             progress_callback=on_progress,
         )
-        self.state.status_message = "Upgrade completed successfully from attached live source. Persistent Storage preserved."
+        self.state.status_message = (
+            "Upgrade completed successfully from the running Tails source. "
+            "Existing Persistent Storage, if present, was preserved."
+        )
+
+    def upgrade_selected_from_attached_live_source(self, device_path: str, progress_callback=None) -> None:
+        """Upgrade from an attached live source device without rewriting target persistence."""
+        if not self.state.attached_live_source_device:
+            raise RuntimeError("No attached Tails live source has been selected.")
+        self._require_valid_target_plan(OperationKind.UPGRADE, device_path)
+
+        source_device = get_parent_disk_path(self.state.attached_live_source_device)
+        self.state.status_message = (
+            f"Upgrading {device_path} from attached Tails live source {source_device}; "
+            "existing Persistent Storage, if present, will be preserved…"
+        )
+
+        def on_progress(message: str) -> None:
+            self.state.last_clone_progress = message
+            self.state.status_message = f"Upgrading… {message}"
+            if progress_callback:
+                progress_callback(message)
+
+        self.clone_service.upgrade_from_device(
+            source_device=source_device,
+            device_path=device_path,
+            progress_callback=on_progress,
+        )
+        self.state.status_message = (
+            "Upgrade completed successfully from attached live source. "
+            "Existing Persistent Storage, if present, was preserved."
+        )

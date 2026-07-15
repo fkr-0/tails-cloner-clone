@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import sys
 import tkinter as tk
 import webbrowser
@@ -9,7 +8,9 @@ from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
 from queue import Empty, SimpleQueue
+from tempfile import NamedTemporaryFile
 from tkinter import filedialog, messagebox, ttk
+from urllib.parse import urlparse
 from urllib.request import urlopen
 
 from tails_cloner.boot_loader import discover_boot_loader_entries
@@ -23,6 +24,7 @@ from tails_cloner.config import (
 from tails_cloner.controller import ApplicationController
 from tails_cloner.models import SourceMode
 from tails_cloner.planner import OperationKind
+from tails_cloner.verification import parse_sha256_text, sha256_file, verify_sha256
 
 
 class TailsClonerApp(tk.Tk):
@@ -659,7 +661,7 @@ class TailsClonerApp(tk.Tk):
     def _upgrade_warning_text(self) -> str:
         return (
             "Upgrade replaces only the existing Tails system partition. "
-            "Persistent Storage is kept intact.\n\n"
+            "Existing Persistent Storage, if present, is kept intact.\n\n"
             "Only select this for a device that already has Tails installed."
         )
 
@@ -679,6 +681,9 @@ class TailsClonerApp(tk.Tk):
         self._checksum_job_id += 1
         job_id = self._checksum_job_id
         image_path = self.image_path_var.get().strip()
+        if image_path != self.controller.state.verified_image_path:
+            self.controller.state.verified_image_path = ""
+            self.controller.state.verified_image_sha256 = ""
         if not image_path:
             self.local_checksum_var.set("")
             return
@@ -698,16 +703,9 @@ class TailsClonerApp(tk.Tk):
         candidate = Path(path)
         if not candidate.exists() or not candidate.is_file():
             return ""
-        digest = hashlib.sha256()
         try:
-            with candidate.open("rb") as handle:
-                while True:
-                    chunk = handle.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    digest.update(chunk)
-            return digest.hexdigest()
-        except Exception:
+            return sha256_file(candidate)
+        except OSError:
             return ""
 
     def _fetch_suggested_checksum(self, url: str) -> None:
@@ -784,49 +782,83 @@ class TailsClonerApp(tk.Tk):
 
     def _start_remote_download(self) -> None:
         img_url = self.controller.state.selected_image_url.strip()
+        checksum_url = self.controller.state.selected_checksum_url.strip()
         if not img_url:
             self.controller.state.status_message = "No remote IMG URL selected."
             return
+        if not checksum_url:
+            self.controller.state.status_message = "Remote IMG has no published SHA-256 checksum; refusing download."
+            return
 
-        filename = Path(img_url).name or f"tails-{self.controller.state.selected_version}.img"
+        filename = Path(urlparse(img_url).path).name or f"tails-{self.controller.state.selected_version}.img"
+        self.controller.state.verified_image_path = ""
+        self.controller.state.verified_image_sha256 = ""
         self._show_remote_download_started(filename)
-        self.controller.executor.submit(self._download_selected_remote_image, img_url, filename)
+        self.controller.executor.submit(
+            self._download_selected_remote_image,
+            img_url,
+            checksum_url,
+            filename,
+        )
 
-    def _download_selected_remote_image(self, img_url: str, filename: str) -> None:
+    def _download_selected_remote_image(self, img_url: str, checksum_url: str, filename: str) -> None:
         cache_dir = Path.home() / ".cache" / "tails-cloner-clone" / "downloads"
         cache_dir.mkdir(parents=True, exist_ok=True)
         target_path = cache_dir / filename
+        partial_path: Path | None = None
 
         try:
-            with (
-                urlopen(img_url, timeout=60) as response,  # noqa: S310 - user-selected remote source
-                target_path.open("wb") as out,
-            ):
-                while True:
-                    chunk = response.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    out.write(chunk)
-            self._queue_ui(lambda: self._apply_remote_download_success(target_path, filename))
+            with urlopen(checksum_url, timeout=30) as checksum_response:  # noqa: S310 - selected Tails metadata
+                checksum_payload = checksum_response.read(256 * 1024 + 1)
+            if len(checksum_payload) > 256 * 1024:
+                raise ValueError("Published checksum response is unexpectedly large")
+            checksum_text = checksum_payload.decode("utf-8", errors="strict")
+            expected_digest = parse_sha256_text(checksum_text, expected_filename=filename)
+
+            with NamedTemporaryFile(
+                mode="wb",
+                prefix=f".{filename}.",
+                suffix=".part",
+                dir=cache_dir,
+                delete=False,
+            ) as out:
+                partial_path = Path(out.name)
+                with urlopen(img_url, timeout=60) as response:  # noqa: S310 - selected Tails image
+                    while chunk := response.read(1024 * 1024):
+                        out.write(chunk)
+
+            actual_digest = verify_sha256(partial_path, expected_digest)
+            partial_path.replace(target_path)
+            partial_path = None
+            self._queue_ui(
+                lambda: self._apply_remote_download_success(target_path, filename, actual_digest)
+            )
         except Exception as error:  # noqa: BLE001 - visible UI feedback
+            if partial_path is not None:
+                partial_path.unlink(missing_ok=True)
             self._queue_ui(lambda message=str(error): self._apply_remote_download_failure(message))
 
     def _show_remote_download_started(self, filename: str) -> None:
-        self.source_status_var.set(f"Downloading {filename}…")
-        self.controller.state.status_message = f"Downloading {filename}…"
+        self.remote_state_var.set("downloading; verification pending")
+        self.source_status_var.set(f"Downloading and SHA-256 verifying {filename}…")
+        self.controller.state.status_message = f"Downloading and verifying {filename}…"
 
-    def _apply_remote_download_success(self, target_path: Path, filename: str) -> None:
+    def _apply_remote_download_success(self, target_path: Path, filename: str, digest: str) -> None:
         self.image_path_var.set(str(target_path))
         self.controller.set_source_mode(SourceMode.LOCAL)
         self.source_mode_var.set("local")
-        self.remote_state_var.set("downloaded")
+        self.remote_state_var.set("SHA-256 verified")
         self.suggested_local_path_var.set(str(target_path))
-        self.source_status_var.set(f"Downloaded to {target_path}")
-        self.controller.state.status_message = f"Downloaded {filename}. Using local file source."
+        self.local_checksum_var.set(digest)
+        self.controller.state.verified_image_path = str(target_path)
+        self.controller.state.verified_image_sha256 = digest
+        self.source_status_var.set(f"Downloaded and verified to {target_path}")
+        self.controller.state.status_message = f"Downloaded and SHA-256 verified {filename}. Using local file source."
 
     def _apply_remote_download_failure(self, message: str) -> None:
-        self.source_status_var.set(f"Download failed: {message}")
-        self.controller.state.status_message = f"Download failed: {message}"
+        self.remote_state_var.set("download or verification failed")
+        self.source_status_var.set(f"Download/verification failed: {message}")
+        self.controller.state.status_message = f"Download/verification failed: {message}"
 
     def _on_device_selected(self, _event=None) -> None:
         self._update_device_warnings_and_button()
@@ -886,7 +918,7 @@ class TailsClonerApp(tk.Tk):
         operation_label = "upgrade" if is_upgrade else "installation"
         complete_title = "Upgrade complete" if is_upgrade else "Installation complete"
         complete_message = (
-            f"Tails has been upgraded on {device_path}. Persistent Storage was preserved."
+            f"Tails has been upgraded on {device_path}. Existing Persistent Storage, if present, was preserved."
             if is_upgrade
             else f"Tails has been successfully installed to {device_path}."
         )
@@ -1114,7 +1146,7 @@ class TailsClonerApp(tk.Tk):
 
         action = self.clone_button.cget("text")
         if action == "Upgrade":
-            action_desc = "Upgrade existing Tails; Persistent Storage preserved"
+            action_desc = "Upgrade existing Tails; existing Persistent Storage preserved if present"
         elif action == "Reinstall (delete all data)":
             action_desc = "Reinstall; deletes all data including Persistent Storage"
         else:

@@ -121,7 +121,7 @@ def parse_latest_release_document(payload: object) -> LatestReleaseMetadata:
 
     iso_url = iso_entry.get("url") if isinstance(iso_entry, dict) else None
     img_url = img_entry.get("url") if isinstance(img_entry, dict) else None
-    sig_url = iso_entry.get("sig") if isinstance(iso_entry, dict) else None
+    sig_url = img_entry.get("sig") if isinstance(img_entry, dict) else None
     sha256_url = img_entry.get("sha256_url") if isinstance(img_entry, dict) else None
 
     return LatestReleaseMetadata(
@@ -158,7 +158,7 @@ def build_version_assets(base_url: str, version: str) -> VersionAssets:
         directory_url=directory_url,
         iso_url=urljoin(directory_url, f"{stem}.iso"),
         img_url=urljoin(directory_url, f"{stem}.img"),
-        sig_url=urljoin(directory_url, f"{stem}.iso.sig"),
+        sig_url=urljoin(directory_url, f"{stem}.img.sig"),
         sha256_url=urljoin(directory_url, f"{stem}.img.sha256"),
     )
 

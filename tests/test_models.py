@@ -1,6 +1,6 @@
 import unittest
 
-from tails_cloner.models import BlockDevice, SourceMode, VersionAssets, AppState
+from tails_cloner.models import AppState, BlockDevice, SourceMode, VersionAssets
 
 
 class BlockDeviceTests(unittest.TestCase):
@@ -98,7 +98,7 @@ class VersionAssetsTests(unittest.TestCase):
             directory_url="https://download.tails.net/stable/6.12/",
             iso_url="https://download.tails.net/stable/6.12/tails-amd64-6.12.iso",
             img_url="https://download.tails.net/stable/6.12/tails-amd64-6.12.img",
-            sig_url="https://download.tails.net/stable/6.12/tails-amd64-6.12.iso.sig",
+            sig_url="https://download.tails.net/stable/6.12/tails-amd64-6.12.img.sig",
             sha256_url="https://download.tails.net/stable/6.12/tails-amd64-6.12.img.sha256",
         )
         self.assertEqual(assets.version, "6.12")

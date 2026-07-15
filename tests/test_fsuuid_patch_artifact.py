@@ -1,8 +1,11 @@
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
+TRACKED_LIVE_BOOT_PATCH = ROOT / "patches/tails-live-boot-honor-fsuuid.patch"
 TAILS_TREE = ROOT / "tails_issue_fix" / "tails"
-LIVE_BOOT_PATCH = (
+LOCAL_LIVE_BOOT_PATCH = (
     TAILS_TREE
     / "config/chroot_local-patches/live-boot:_honor-FSUUID-when-finding-the-live-medium.patch"
 )
@@ -17,8 +20,8 @@ def _embedded_file_from_rfc(text: str) -> str:
     return "\n".join(line[1:] for line in payload if line.startswith("+")) + "\n"
 
 
-def test_tails_tree_installs_authoritative_fsuuid_live_boot_patch() -> None:
-    patch = LIVE_BOOT_PATCH.read_text(encoding="utf-8")
+def test_tracked_patch_makes_fsuuid_authoritative() -> None:
+    patch = TRACKED_LIVE_BOOT_PATCH.read_text(encoding="utf-8")
 
     assert "--- a/lib/live/boot/9990-misc-helpers.sh" in patch
     assert 'if [ ! -b "/dev/disk/by-uuid/${FSUUID}" ]' in patch
@@ -33,23 +36,31 @@ def test_tails_tree_installs_authoritative_fsuuid_live_boot_patch() -> None:
     assert "removable" not in authoritative_block
 
 
-def test_rfc_envelope_embeds_the_exact_tails_patch() -> None:
-    expected = LIVE_BOOT_PATCH.read_text(encoding="utf-8")
-    actual = _embedded_file_from_rfc(RFC_ENVELOPE.read_text(encoding="utf-8"))
+def test_local_tails_tree_installs_the_tracked_patch_when_available() -> None:
+    if not LOCAL_LIVE_BOOT_PATCH.exists():
+        pytest.skip("optional nested Tails checkout is not present")
 
+    assert LOCAL_LIVE_BOOT_PATCH.read_bytes() == TRACKED_LIVE_BOOT_PATCH.read_bytes()
+
+
+def test_local_rfc_envelope_embeds_the_exact_patch_when_available() -> None:
+    if not RFC_ENVELOPE.exists():
+        pytest.skip("optional FSUUID submission workspace is not present")
+
+    expected = TRACKED_LIVE_BOOT_PATCH.read_text(encoding="utf-8")
+    actual = _embedded_file_from_rfc(RFC_ENVELOPE.read_text(encoding="utf-8"))
     assert actual == expected
 
 
-def test_grub_appends_the_boot_filesystem_uuid_to_every_kernel_entry() -> None:
-    config = GRUB_CONFIG.read_text(encoding="utf-8")
-    linux_lines = [line.strip() for line in config.splitlines() if line.lstrip().startswith("linux ")]
+def test_local_tails_bootloaders_append_fsuuid_when_available() -> None:
+    if not GRUB_CONFIG.exists() or not SYSLINUX_HOOK.exists():
+        pytest.skip("optional nested Tails checkout is not present")
 
-    assert "probe --set rootuuid --fs-uuid ($root)" in config
+    grub = GRUB_CONFIG.read_text(encoding="utf-8")
+    linux_lines = [line.strip() for line in grub.splitlines() if line.lstrip().startswith("linux ")]
+    syslinux = SYSLINUX_HOOK.read_text(encoding="utf-8")
+
+    assert "probe --set rootuuid --fs-uuid ($root)" in grub
     assert linux_lines
     assert all("FSUUID=${rootuuid}" in line for line in linux_lines)
-
-
-def test_syslinux_requests_the_filesystem_uuid_append_bit() -> None:
-    hook = SYSLINUX_HOOK.read_text(encoding="utf-8")
-
-    assert "sysappend 0x40000" in hook
+    assert "sysappend 0x40000" in syslinux

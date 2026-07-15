@@ -4,12 +4,13 @@ import os
 import subprocess
 import time
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from tails_cloner.boot_loader import apply_boot_loader_order_to_directory
 from tails_cloner.models import PostWriteOptions
+from tails_cloner.upgrader import build_privileged_command, find_tails_system_partition
 
 ProgressCallback = Callable[[str], None] | None
 SyncRunner = Callable[[], None]
@@ -24,7 +25,7 @@ def _emit(progress_callback: ProgressCallback, message: str) -> None:
 
 
 def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _append_audit_log(log_file_path: str, lines: list[str]) -> None:
@@ -34,10 +35,8 @@ def _append_audit_log(log_file_path: str, lines: list[str]) -> None:
         handle.write("\n".join(lines) + "\n")
 
 
-def _partition_path(device_path: str, partition_number: int) -> str:
-    if device_path[-1:].isdigit():
-        return f"{device_path}p{partition_number}"
-    return f"{device_path}{partition_number}"
+def _find_tails_boot_partition(device_path: str) -> str:
+    return find_tails_system_partition(device_path).path
 
 
 def _run_checked(command: list[str], run: CommandRunner) -> subprocess.CompletedProcess[str]:
@@ -53,7 +52,7 @@ def _apply_boot_loader_order(
     if not options.boot_loader_order.enabled or not options.boot_loader_order.entries:
         return []
 
-    boot_partition = _partition_path(device_path, 1)
+    boot_partition = _find_tails_boot_partition(device_path)
     changed_paths: list[str] = []
     _emit(progress_callback, f"Applying experimental boot-loader order on {boot_partition}...")
 
@@ -61,7 +60,13 @@ def _apply_boot_loader_order(
         mount_path = Path(mount_dir)
         mounted = False
         try:
-            _run_checked(["mount", "-o", "rw", boot_partition, str(mount_path)], run)
+            mount_options = f"rw,uid={os.getuid()},gid={os.getgid()},umask=077"
+            _run_checked(
+                build_privileged_command(
+                    ["mount", "-o", mount_options, "--", boot_partition, str(mount_path)]
+                ),
+                run,
+            )
             mounted = True
             result = apply_boot_loader_order_to_directory(mount_path, options.boot_loader_order.entries)
             if not result.files:
@@ -83,7 +88,10 @@ def _apply_boot_loader_order(
             return changed_paths
         finally:
             if mounted:
-                run(["umount", str(mount_path)], check=False, text=True, capture_output=True)
+                _run_checked(
+                    build_privileged_command(["umount", "--", str(mount_path)]),
+                    run,
+                )
 
 
 def apply_post_write_options(

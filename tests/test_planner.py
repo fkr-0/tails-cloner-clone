@@ -29,6 +29,17 @@ def test_install_plan_allows_plain_selectable_target() -> None:
     assert plan.warnings == []
 
 
+def test_install_plan_rejects_image_larger_than_target() -> None:
+    plan = plan_operation(
+        OperationKind.INSTALL,
+        OperationSource(type="image", path="/tmp/tails.img", size_bytes=17_000_000_000),
+        device(size_bytes=16_000_000_000),
+    )
+
+    assert plan.would_write is False
+    assert any("larger than the target device" in error for error in plan.blocking_errors)
+
+
 def test_install_plan_requires_a_selected_local_image() -> None:
     plan = plan_operation(OperationKind.INSTALL, OperationSource(type="image"), device())
 
@@ -96,7 +107,9 @@ def test_upgrade_plan_preserves_existing_tails_target() -> None:
 
     assert plan.would_write is True
     assert plan.action_label == "Upgrade"
-    assert plan.status_message == "Existing Tails installation detected. Upgrade will preserve Persistent Storage."
+    assert plan.status_message == (
+        "Existing Tails installation detected. Upgrade preserves existing Persistent Storage if present."
+    )
 
 
 def test_plan_warns_for_non_removable_target() -> None:
@@ -130,8 +143,8 @@ def test_upgrade_confirmation_preserves_persistent_storage() -> None:
 
     assert plan.confirmation_title == "Confirm upgrade"
     assert "Upgrade /dev/sdb from tails.img?" in plan.confirmation_message
-    assert "Upgrade preserving Persistent Storage" in plan.confirmation_message
-    assert "preserving Persistent Storage" in plan.data_impact_summary
+    assert "Upgrade while preserving existing Persistent Storage if present" in plan.confirmation_message
+    assert "preserving existing Persistent Storage if present" in plan.data_impact_summary
 
 
 def test_internal_target_confirmation_includes_internal_label_and_warning() -> None:

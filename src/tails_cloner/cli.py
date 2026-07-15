@@ -11,10 +11,14 @@ from typing import Any
 from tails_cloner.config import DEFAULT_REMOTE_INDEX_URL
 from tails_cloner.controller import ApplicationController
 from tails_cloner.devices import DeviceService
-from tails_cloner.models import AppState, BlockDevice, SourceMode, VersionAssets
+from tails_cloner.models import AppState, BlockDevice, VersionAssets
 from tails_cloner.planner import OperationKind, OperationSource, plan_operation
 from tails_cloner.remote_index import RemoteVersionIndex
-from tails_cloner.source import AttachedLiveSystemSource, RunningLiveSystemSource, get_parent_disk_path
+from tails_cloner.source import (
+    AttachedLiveSystemSource,
+    RunningLiveSystemSource,
+    get_parent_disk_path,
+)
 
 
 class _NoWriteCloneService:
@@ -212,7 +216,12 @@ def handle_plan(args: argparse.Namespace) -> int:
         if device is None:
             raise SystemExit(f"target device not found: {args.target}")
         if args.image:
-            source = OperationSource(type="image", path=str(Path(args.image)))
+            image = Path(args.image)
+            try:
+                image_size = image.stat().st_size if image.is_file() else 0
+            except OSError:
+                image_size = 0
+            source = OperationSource(type="image", path=str(image), size_bytes=image_size)
         elif args.running_source:
             running = RunningLiveSystemSource()
             source = OperationSource(

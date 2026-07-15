@@ -124,13 +124,17 @@ class RemoteIndexTests(unittest.TestCase):
             {
                 "version": "7.6.1",
                 "iso": {"url": "https://example.invalid/tails-amd64-7.6.1.iso"},
-                "img": {"url": "https://example.invalid/tails-amd64-7.6.1.img"},
+                "img": {
+                    "url": "https://example.invalid/tails-amd64-7.6.1.img",
+                    "sig": "https://example.invalid/tails-amd64-7.6.1.img.sig",
+                },
             }
         )
 
         self.assertEqual(metadata.version, "7.6.1")
         self.assertEqual(metadata.iso_url, "https://example.invalid/tails-amd64-7.6.1.iso")
         self.assertEqual(metadata.img_url, "https://example.invalid/tails-amd64-7.6.1.img")
+        self.assertEqual(metadata.sig_url, "https://example.invalid/tails-amd64-7.6.1.img.sig")
 
     def test_parse_gitlab_tags_document_filters_out_prereleases(self) -> None:
         versions = parse_gitlab_tags_document(
@@ -160,7 +164,7 @@ class RemoteIndexTests(unittest.TestCase):
         self.assertEqual(assets.img_url, "https://meta.invalid/7.6.1.img")
         self.assertEqual(
             assets.sig_url,
-            "https://download.example/stable/tails-amd64-7.6.1/tails-amd64-7.6.1.iso.sig",
+            "https://download.example/stable/tails-amd64-7.6.1/tails-amd64-7.6.1.img.sig",
         )
 
     def test_fetch_versions_merges_latest_tags_and_directory_listing(self) -> None:
@@ -247,7 +251,7 @@ class RemoteIndexTests(unittest.TestCase):
         )
         self.assertEqual(
             assets.sig_url,
-            "https://download.example/stable/tails-amd64-6.12/tails-amd64-6.12.iso.sig",
+            "https://download.example/stable/tails-amd64-6.12/tails-amd64-6.12.img.sig",
         )
         self.assertEqual(
             assets.sha256_url,

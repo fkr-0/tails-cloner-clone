@@ -1,10 +1,28 @@
+import hashlib
 import tkinter as tk
 import unittest
+from io import BytesIO
+from pathlib import Path
 from queue import SimpleQueue
+from tempfile import TemporaryDirectory
 from unittest import mock
 
 from tails_cloner.app import TailsClonerApp
 from tails_cloner.models import SourceMode
+
+
+class _FakeResponse:
+    def __init__(self, payload: bytes) -> None:
+        self._stream = BytesIO(payload)
+
+    def __enter__(self) -> "_FakeResponse":
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def read(self, size: int = -1) -> bytes:
+        return self._stream.read(size)
 
 
 class _FakeTk:
@@ -80,7 +98,7 @@ class AppWindowClassTests(unittest.TestCase):
         self.assertIn("All data", app._install_warning_text())
         self.assertIn("Persistent Storage", app._install_warning_text())
         self.assertIn("permanently lost", app._install_warning_text())
-        self.assertIn("Persistent Storage is kept intact", app._upgrade_warning_text())
+        self.assertIn("Persistent Storage, if present, is kept intact", app._upgrade_warning_text())
 
     def test_action_mode_accepts_new_upgrade_value_and_legacy_update_value(self) -> None:
         app = TailsClonerApp.__new__(TailsClonerApp)
@@ -114,7 +132,7 @@ class AppWindowClassTests(unittest.TestCase):
 
         app._on_action_mode_changed()
 
-        self.assertIn("Persistent Storage is kept intact", app.install_warning_label.kwargs["text"])
+        self.assertIn("Persistent Storage, if present, is kept intact", app.install_warning_label.kwargs["text"])
         self.assertEqual(app.install_warning_label.kwargs["foreground"], "#2e7d32")
 
     def test_running_source_option_stays_enabled_after_switching_to_local_mode(self) -> None:
@@ -187,6 +205,75 @@ class AppWindowClassTests(unittest.TestCase):
         controller.shutdown.assert_not_called()
         app.destroy.assert_not_called()
 
+    def test_verified_remote_download_is_promoted_atomically(self) -> None:
+        app = TailsClonerApp.__new__(TailsClonerApp)
+        app._ui_events = SimpleQueue()
+        image = b"verified Tails image"
+        digest = hashlib.sha256(image).hexdigest()
+        successes: list[tuple[Path, str, str]] = []
+        failures: list[str] = []
+        app._apply_remote_download_success = lambda path, name, actual: successes.append((path, name, actual))
+        app._apply_remote_download_failure = failures.append
+
+        with (
+            TemporaryDirectory() as tmpdir,
+            mock.patch("tails_cloner.app.Path.home", return_value=Path(tmpdir)),
+            mock.patch(
+                "tails_cloner.app.urlopen",
+                side_effect=[
+                    _FakeResponse(f"{digest}  tails.img\n".encode()),
+                    _FakeResponse(image),
+                ],
+            ),
+        ):
+            app._download_selected_remote_image(
+                "https://example.invalid/tails.img",
+                "https://example.invalid/tails.img.sha256",
+                "tails.img",
+            )
+            app._drain_ui_events()
+
+            target = Path(tmpdir) / ".cache/tails-cloner-clone/downloads/tails.img"
+            self.assertEqual(target.read_bytes(), image)
+            self.assertEqual(list(target.parent.glob(".*.part")), [])
+
+        self.assertEqual(successes[0][1:], ("tails.img", digest))
+        self.assertEqual(failures, [])
+
+    def test_failed_remote_verification_keeps_existing_cached_image(self) -> None:
+        app = TailsClonerApp.__new__(TailsClonerApp)
+        app._ui_events = SimpleQueue()
+        failures: list[str] = []
+        app._apply_remote_download_success = lambda *_args: self.fail("verification unexpectedly succeeded")
+        app._apply_remote_download_failure = failures.append
+
+        with TemporaryDirectory() as tmpdir:
+            target = Path(tmpdir) / ".cache/tails-cloner-clone/downloads/tails.img"
+            target.parent.mkdir(parents=True)
+            target.write_bytes(b"previous verified image")
+            with (
+                mock.patch("tails_cloner.app.Path.home", return_value=Path(tmpdir)),
+                mock.patch(
+                    "tails_cloner.app.urlopen",
+                    side_effect=[
+                        _FakeResponse(f"{'0' * 64}  tails.img\n".encode()),
+                        _FakeResponse(b"corrupt replacement"),
+                    ],
+                ),
+            ):
+                app._download_selected_remote_image(
+                    "https://example.invalid/tails.img",
+                    "https://example.invalid/tails.img.sha256",
+                    "tails.img",
+                )
+                app._drain_ui_events()
+
+            self.assertEqual(target.read_bytes(), b"previous verified image")
+            self.assertEqual(list(target.parent.glob(".*.part")), [])
+
+        self.assertEqual(len(failures), 1)
+        self.assertIn("SHA-256 mismatch", failures[0])
+
     def test_upgrade_plan_names_attached_live_source(self) -> None:
         app = TailsClonerApp.__new__(TailsClonerApp)
         state = type(
@@ -207,7 +294,7 @@ class AppWindowClassTests(unittest.TestCase):
         app._sync_upgrade_plan()
 
         self.assertIn("attached Tails 7.7.2 from /dev/sdc", app.upgrade_plan_var.get())
-        self.assertIn("Persistent Storage preserved", app.upgrade_plan_var.get())
+        self.assertIn("Persistent Storage preserved if present", app.upgrade_plan_var.get())
 
 
 if __name__ == "__main__":

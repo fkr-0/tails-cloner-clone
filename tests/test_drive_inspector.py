@@ -53,8 +53,9 @@ def test_inspect_drive_detects_version_and_persistence() -> None:
                         {
                             "path": "/dev/sdb2",
                             "type": "part",
-                            "fstype": "ext4",
-                            "label": "persistence",
+                            "fstype": "crypto_LUKS",
+                            "label": "",
+                            "partlabel": "TailsData",
                             "mountpoints": [None],
                             "size": "7516192768",
                         },

@@ -57,6 +57,7 @@ class BlockDevice:
     is_big_enough_for_installation: bool = True
     is_big_enough_for_upgrade: bool = True
     is_running_system_device: bool = False
+    is_host_system_device: bool = False
     is_attached_source_device: bool = False
     disabled_reason: str = ""
 
@@ -68,11 +69,13 @@ class BlockDevice:
         read_only_indicator = " (read-only)" if self.read_only else ""
         tails_indicator = " [Tails installed]" if self.has_tails else ""
         running_indicator = " [running Tails source]" if self.is_running_system_device else ""
+        host_indicator = " [current OS disk]" if self.is_host_system_device else ""
         source_indicator = " [attached source]" if self.is_attached_source_device else ""
         disabled_indicator = " [not selectable]" if self.disabled_reason else ""
         return (
             f"{self.path} · {self.size_label} · {vendor} {model}"
-            f"{removable_indicator}{read_only_indicator}{tails_indicator}{running_indicator}{source_indicator}{disabled_indicator}"
+            f"{removable_indicator}{read_only_indicator}{tails_indicator}{running_indicator}"
+            f"{host_indicator}{source_indicator}{disabled_indicator}"
         ).strip()
 
     @property
@@ -91,6 +94,8 @@ class AppState:
     selected_image_url: str = ""
     selected_signature_url: str = ""
     selected_checksum_url: str = ""
+    verified_image_path: str = ""
+    verified_image_sha256: str = ""
     versions_loading: bool = False
     devices_loading: bool = False
     last_clone_progress: str = ""

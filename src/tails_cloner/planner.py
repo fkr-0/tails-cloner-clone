@@ -19,6 +19,7 @@ class OperationSource:
     path: str = ""
     device: str = ""
     version: str = ""
+    size_bytes: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,7 +51,7 @@ class OperationPlan:
         if self.blocking_errors:
             return "Device is visible for context but cannot be selected as a target."
         if self.operation == OperationKind.UPGRADE:
-            return "Existing Tails installation detected. Upgrade will preserve Persistent Storage."
+            return "Existing Tails installation detected. Upgrade preserves existing Persistent Storage if present."
         if self.target.has_tails:
             return "Device has Tails installed. Install/Reinstall will delete Persistent Storage."
         return "Device is eligible for installation."
@@ -93,7 +94,7 @@ class OperationPlan:
     @property
     def data_impact_summary(self) -> str:
         if self.operation == OperationKind.UPGRADE:
-            return "This will upgrade the existing Tails installation while preserving Persistent Storage."
+            return "This will upgrade the existing Tails installation while preserving existing Persistent Storage if present."
         if self.target.has_tails:
             return "All data on the selected device will be lost, including any Persistent Storage."
         return "All data on the selected device will be lost."
@@ -101,7 +102,7 @@ class OperationPlan:
     @property
     def confirmation_message(self) -> str:
         if self.operation == OperationKind.UPGRADE:
-            action = "Upgrade preserving Persistent Storage"
+            action = "Upgrade while preserving existing Persistent Storage if present"
             lead = f"Upgrade {self.target.path} from {self.source_label}?"
         elif self.target.has_tails:
             action = "Reinstall and delete all data"
@@ -167,6 +168,7 @@ def _device_to_dict(device: BlockDevice) -> dict[str, Any]:
         "is_big_enough_for_installation": device.is_big_enough_for_installation,
         "is_big_enough_for_upgrade": device.is_big_enough_for_upgrade,
         "is_running_system_device": device.is_running_system_device,
+        "is_host_system_device": device.is_host_system_device,
         "is_attached_source_device": device.is_attached_source_device,
         "selectable": device.selectable,
         "disabled_reason": device.disabled_reason,
@@ -189,6 +191,17 @@ def plan_operation(operation: OperationKind, source: OperationSource, target: Bl
             errors.append("Validate an attached Tails live source before starting an upgrade.")
         if operation != OperationKind.UPGRADE:
             errors.append("Attached live sources are only supported for persistence-preserving upgrades.")
+
+    if (
+        operation == OperationKind.INSTALL
+        and source.size_bytes > 0
+        and target.size_bytes > 0
+        and source.size_bytes > target.size_bytes
+    ):
+        errors.append(
+            "The selected image is larger than the target device: "
+            f"{source.size_bytes} > {target.size_bytes} bytes."
+        )
 
     if target.disabled_reason:
         errors.append(target.disabled_reason)

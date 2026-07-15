@@ -1,6 +1,10 @@
 import unittest
 
-from tails_cloner.devices import parse_lsblk_json, MIN_INSTALLATION_SIZE_GB, MIN_UPGRADE_SIZE_GB, format_bytes_as_gib
+from tails_cloner.devices import (
+    MIN_INSTALLATION_SIZE_GB,
+    format_bytes_as_gib,
+    parse_lsblk_json,
+)
 
 
 class DeviceParsingTests(unittest.TestCase):
@@ -90,6 +94,47 @@ class DeviceParsingTests(unittest.TestCase):
         self.assertTrue(devices[0].is_gpt)
         self.assertEqual(devices[0].label, "Tails")
         self.assertEqual(devices[0].fstype, "vfat")
+
+    def test_current_os_disk_is_visible_but_not_selectable(self) -> None:
+        payload = {
+            "blockdevices": [
+                {
+                    "path": "/dev/nvme0n1",
+                    "size": str(512 * 1024**3),
+                    "model": "System Disk",
+                    "vendor": "NVMe",
+                    "rm": False,
+                    "hotplug": False,
+                    "tran": "nvme",
+                    "type": "disk",
+                    "ro": False,
+                    "pttype": "gpt",
+                    "children": [
+                        {
+                            "path": "/dev/nvme0n1p2",
+                            "type": "part",
+                            "fstype": "crypto_LUKS",
+                            "mountpoints": [None],
+                            "children": [
+                                {
+                                    "path": "/dev/mapper/root",
+                                    "type": "crypt",
+                                    "fstype": "ext4",
+                                    "mountpoints": ["/"],
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }
+
+        device = parse_lsblk_json(payload)[0]
+
+        self.assertTrue(device.is_host_system_device)
+        self.assertFalse(device.selectable)
+        self.assertIn("currently running operating system", device.disabled_reason)
+        self.assertIn("current OS disk", device.pretty_name)
 
     def test_device_size_thresholds(self) -> None:
         """Test minimum size requirements for install vs upgrade."""

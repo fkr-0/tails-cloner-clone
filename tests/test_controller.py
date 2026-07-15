@@ -1,3 +1,4 @@
+import hashlib
 import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -26,7 +27,7 @@ class FakeVersionService:
                 directory_url="https://download.example/stable/6.12/",
                 iso_url="https://download.example/stable/6.12/tails-amd64-6.12.iso",
                 img_url="https://download.example/stable/6.12/tails-amd64-6.12.img",
-                sig_url="https://download.example/stable/6.12/tails-amd64-6.12.iso.sig",
+                sig_url="https://download.example/stable/6.12/tails-amd64-6.12.img.sig",
                 sha256_url="https://download.example/stable/6.12/tails-amd64-6.12.img.sha256",
             ),
             VersionAssets(
@@ -34,7 +35,7 @@ class FakeVersionService:
                 directory_url="https://download.example/stable/6.11/",
                 iso_url="https://download.example/stable/6.11/tails-amd64-6.11.iso",
                 img_url="https://download.example/stable/6.11/tails-amd64-6.11.img",
-                sig_url="https://download.example/stable/6.11/tails-amd64-6.11.iso.sig",
+                sig_url="https://download.example/stable/6.11/tails-amd64-6.11.img.sig",
                 sha256_url="https://download.example/stable/6.11/tails-amd64-6.11.img.sha256",
             ),
         ]
@@ -145,7 +146,7 @@ class ControllerTests(unittest.TestCase):
 
         self.assertEqual(controller.state.selected_version, "6.11")
         self.assertTrue(controller.state.selected_iso_url.endswith("tails-amd64-6.11.iso"))
-        self.assertTrue(controller.state.selected_signature_url.endswith("tails-amd64-6.11.iso.sig"))
+        self.assertTrue(controller.state.selected_signature_url.endswith("tails-amd64-6.11.img.sig"))
 
     def test_clone_selected_image_updates_status(self) -> None:
         clone_service = FakeCloneService()
@@ -167,6 +168,79 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(controller.state.status_message, "Installation completed successfully.")
         self.assertEqual(controller.state.last_clone_progress, "done")
 
+    def test_verified_download_is_rechecked_immediately_before_install(self) -> None:
+        clone_service = FakeCloneService()
+        with TemporaryDirectory() as tmpdir:
+            image = Path(tmpdir) / "tails.img"
+            image.write_bytes(b"verified image")
+            digest = hashlib.sha256(b"verified image").hexdigest()
+            state = AppState(
+                verified_image_path=str(image),
+                verified_image_sha256=digest,
+            )
+            controller = ApplicationController(
+                state=state,
+                version_service=FakeVersionService(),
+                device_service=FakeDeviceService(),
+                clone_service=clone_service,
+                executor=ThreadPoolExecutor(max_workers=1),
+            )
+            self.addCleanup(controller.shutdown)
+
+            controller.clone_selected_image(str(image), "/dev/sdb")
+
+        self.assertEqual(len(clone_service.calls), 1)
+
+    def test_tampered_verified_download_is_rejected_before_install(self) -> None:
+        clone_service = FakeCloneService()
+        with TemporaryDirectory() as tmpdir:
+            image = Path(tmpdir) / "tails.img"
+            image.write_bytes(b"original image")
+            digest = hashlib.sha256(b"original image").hexdigest()
+            image.write_bytes(b"tampered image")
+            state = AppState(
+                verified_image_path=str(image),
+                verified_image_sha256=digest,
+            )
+            controller = ApplicationController(
+                state=state,
+                version_service=FakeVersionService(),
+                device_service=FakeDeviceService(),
+                clone_service=clone_service,
+                executor=ThreadPoolExecutor(max_workers=1),
+            )
+            self.addCleanup(controller.shutdown)
+
+            with self.assertRaisesRegex(RuntimeError, "previously verified downloaded image changed"):
+                controller.clone_selected_image(str(image), "/dev/sdb")
+
+        self.assertEqual(clone_service.calls, [])
+        self.assertIn("integrity verification failed", controller.state.status_message.lower())
+
+    def test_running_tails_upgrade_uses_live_source_device_partition(self) -> None:
+        clone_service = FakeCloneService()
+        state = AppState(
+            source_mode=SourceMode.RUNNING,
+            running_tails_available=True,
+            running_tails_device="/dev/sdb1",
+            running_tails_version="7.7.2",
+        )
+        controller = ApplicationController(
+            state=state,
+            version_service=FakeVersionService(),
+            device_service=FakeDeviceService(),
+            clone_service=clone_service,
+            executor=ThreadPoolExecutor(max_workers=1),
+        )
+        self.addCleanup(controller.shutdown)
+
+        controller.upgrade_selected_image(None, "/dev/sdc")
+
+        self.assertEqual(clone_service.upgrade_calls, [])
+        self.assertEqual(clone_service.upgrade_from_device_calls, [("/dev/sdb", "/dev/sdc")])
+        self.assertEqual(controller.state.last_clone_progress, "source-device partition upgrade done")
+        self.assertIn("running Tails source", controller.state.status_message)
+
     def test_upgrade_selected_image_uses_partition_scoped_upgrade_service(self) -> None:
         clone_service = FakeCloneService()
         controller = ApplicationController(
@@ -182,7 +256,10 @@ class ControllerTests(unittest.TestCase):
 
         self.assertEqual(clone_service.calls, [])
         self.assertEqual(clone_service.upgrade_calls, [("/tmp/tails.img", "/dev/sdb")])
-        self.assertEqual(controller.state.status_message, "Upgrade completed successfully. Persistent Storage preserved.")
+        self.assertEqual(
+            controller.state.status_message,
+            "Upgrade completed successfully. Existing Persistent Storage, if present, was preserved.",
+        )
         self.assertEqual(controller.state.last_clone_progress, "partition upgrade done")
 
     def test_refresh_devices_uses_generic_device_wording(self) -> None:
@@ -217,6 +294,32 @@ class ControllerTests(unittest.TestCase):
         self.assertTrue(controller.state.devices[0].is_running_system_device)
         self.assertFalse(controller.state.devices[0].selectable)
         self.assertIn("currently running Tails", controller.state.devices[0].disabled_reason)
+
+    def test_annotation_preserves_current_os_disk_protection(self) -> None:
+        system_disk = BlockDevice(
+            path="/dev/nvme0n1",
+            size_bytes=512 * 1024**3,
+            size_label="512.0 GiB",
+            model="System Disk",
+            vendor="NVMe",
+            transport="nvme",
+            removable=False,
+            is_host_system_device=True,
+            disabled_reason="This device contains filesystems used by the currently running operating system.",
+        )
+        controller = ApplicationController(
+            state=AppState(devices=[system_disk]),
+            version_service=FakeVersionService(),
+            device_service=FakeDeviceService(),
+            clone_service=FakeCloneService(),
+            executor=ThreadPoolExecutor(max_workers=1),
+        )
+        self.addCleanup(controller.shutdown)
+
+        controller.annotate_device_selection_state()
+
+        self.assertFalse(system_disk.selectable)
+        self.assertIn("currently running operating system", system_disk.disabled_reason)
 
     def test_install_rejects_running_device_target(self) -> None:
         clone_service = FakeCloneService()
@@ -296,7 +399,7 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(controller.state.last_clone_progress, "source-device partition upgrade done")
         self.assertEqual(
             controller.state.status_message,
-            "Upgrade completed successfully from attached live source. Persistent Storage preserved.",
+            "Upgrade completed successfully from attached live source. Existing Persistent Storage, if present, was preserved.",
         )
 
     def test_attached_live_upgrade_rejects_source_as_target(self) -> None:

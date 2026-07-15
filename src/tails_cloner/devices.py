@@ -2,13 +2,35 @@ from __future__ import annotations
 
 import json
 import subprocess
+from collections.abc import Callable
+from typing import Any
 
 from tails_cloner.drive_inspector import has_tails_installation
 from tails_cloner.models import BlockDevice
 
-LSBLK_COLUMNS = "PATH,SIZE,MODEL,VENDOR,RM,HOTPLUG,TRAN,TYPE,RO,FSTYPE,LABEL,PARTTYPE,PTTYPE"
+LSBLK_COLUMNS = "PATH,SIZE,MODEL,VENDOR,RM,HOTPLUG,TRAN,TYPE,RO,FSTYPE,LABEL,PARTTYPE,PTTYPE,MOUNTPOINTS"
 MIN_INSTALLATION_SIZE_GB = 8
 MIN_UPGRADE_SIZE_GB = 16
+SYSTEM_MOUNTPOINTS = {"/", "/boot", "/boot/efi", "/usr", "/var"}
+
+
+def _walk_nodes(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for node in nodes:
+        result.append(node)
+        children = node.get("children") or []
+        if isinstance(children, list):
+            result.extend(_walk_nodes([child for child in children if isinstance(child, dict)]))
+    return result
+
+
+def _mountpoints(node: dict[str, Any]) -> set[str]:
+    value = node.get("mountpoints")
+    if isinstance(value, list):
+        return {entry for entry in value if isinstance(entry, str)}
+    if isinstance(value, str):
+        return {value}
+    return set()
 
 
 def format_bytes_as_gib(size_bytes: int) -> str:
@@ -16,9 +38,15 @@ def format_bytes_as_gib(size_bytes: int) -> str:
     return f"{gib:.1f} GiB"
 
 
-def parse_lsblk_json(payload: dict) -> list[BlockDevice]:
+RunCommand = Callable[..., subprocess.CompletedProcess[str]]
+
+
+def parse_lsblk_json(payload: dict[str, Any]) -> list[BlockDevice]:
     devices: list[BlockDevice] = []
-    for item in payload.get("blockdevices", []):
+    for raw_item in payload.get("blockdevices", []):
+        if not isinstance(raw_item, dict):
+            continue
+        item: dict[str, Any] = raw_item
         if item.get("type") != "disk":
             continue
 
@@ -26,10 +54,11 @@ def parse_lsblk_json(payload: dict) -> list[BlockDevice]:
         size_bytes = int(item.get("size") or 0)
         size_gb = size_bytes / (1024**3)
 
-        # Get partitions for this disk
-        partitions = []
-        if "children" in item:
-            partitions = [child for child in item["children"] if child.get("type") == "part"]
+        children = item.get("children") or []
+        child_nodes = [child for child in children if isinstance(child, dict)] if isinstance(children, list) else []
+        all_descendants = _walk_nodes(child_nodes)
+        partitions = [child for child in all_descendants if child.get("type") == "part"]
+        is_host_system_device = any(_mountpoints(node) & SYSTEM_MOUNTPOINTS for node in all_descendants)
 
         # Detect Tails installation
         has_tails = has_tails_installation(item, partitions)
@@ -42,8 +71,8 @@ def parse_lsblk_json(payload: dict) -> list[BlockDevice]:
 
         if partitions:
             first_part = partitions[0]
-            fstype = first_part.get("fstype", "")
-            label = first_part.get("label", "")
+            fstype = str(first_part.get("fstype") or "")
+            label = str(first_part.get("label") or "")
 
         devices.append(
             BlockDevice(
@@ -62,13 +91,19 @@ def parse_lsblk_json(payload: dict) -> list[BlockDevice]:
                 has_tails=has_tails,
                 is_big_enough_for_installation=size_gb >= MIN_INSTALLATION_SIZE_GB,
                 is_big_enough_for_upgrade=size_gb >= MIN_UPGRADE_SIZE_GB,
+                is_host_system_device=is_host_system_device,
+                disabled_reason=(
+                    "This device contains filesystems used by the currently running operating system."
+                    if is_host_system_device
+                    else ""
+                ),
             )
         )
     return devices
 
 
 class DeviceService:
-    def __init__(self, run: callable = subprocess.run) -> None:
+    def __init__(self, run: RunCommand = subprocess.run) -> None:
         self._run = run
 
     def list_devices(self) -> list[BlockDevice]:
@@ -79,6 +114,8 @@ class DeviceService:
             capture_output=True,
         )
         payload = json.loads(result.stdout)
+        if not isinstance(payload, dict):
+            raise RuntimeError("lsblk returned a non-object JSON payload")
         return parse_lsblk_json(payload)
 
     def list_removable_devices(self) -> list[BlockDevice]:
