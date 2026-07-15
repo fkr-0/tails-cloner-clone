@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import select
@@ -50,10 +51,8 @@ class RunLock:
 
     def __exit__(self, _exc_type: object, _exc: object, _tb: object) -> None:
         if self.acquired:
-            try:
+            with contextlib.suppress(FileNotFoundError):
                 self.path.unlink()
-            except FileNotFoundError:
-                pass
 
 
 def wait_for_socket(path: Path, timeout: int) -> socket.socket:

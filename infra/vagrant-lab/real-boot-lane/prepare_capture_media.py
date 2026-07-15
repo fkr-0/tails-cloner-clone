@@ -15,7 +15,7 @@ TAILS_IMAGE_CACHE = REPO_ROOT / '.cache/vagrant-lab/tails-images'
 
 
 def run(command: list[str], *, require: bool = True) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(command, check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    result = subprocess.run(command, check=False, text=True, capture_output=True)
     if require and result.returncode != 0:
         raise SystemExit(f"command failed: {' '.join(command)}\nstdout={result.stdout}\nstderr={result.stderr}")
     return result

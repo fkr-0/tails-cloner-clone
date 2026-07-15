@@ -43,7 +43,7 @@ def _real_boot_lane_data() -> dict:
 def test_scenario_matrix_documents_requested_install_and_upgrade_cases() -> None:
     data = _scenario_data()
     cases = set(data['cases'])
-    assert REQUIRED_CASES <= cases
+    assert cases >= REQUIRED_CASES
 
 
 def test_scenario_matrix_has_status_and_next_step_for_every_case() -> None:

@@ -34,7 +34,7 @@ def resolve_variant(variant: str, roles: list[str], require_existing_media: bool
         command.append('--require-existing-media')
     for role in roles:
         command.extend(['--role', role])
-    completed = subprocess.run(command, check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    completed = subprocess.run(command, check=False, text=True, capture_output=True)
     payload = json.loads(completed.stdout or '{}')
     payload['returncode'] = completed.returncode
     payload['stderr'] = completed.stderr

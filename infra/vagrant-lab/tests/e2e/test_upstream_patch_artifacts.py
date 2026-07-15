@@ -27,8 +27,7 @@ def run(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
         cwd=cwd,
         check=True,
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
     )
 
 

@@ -62,8 +62,7 @@ def run_smoke(image: Path, timeout: int, memory_mb: int, cpus: int) -> dict[str,
     completed = subprocess.run(
         cmd,
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         env=env,
         check=False,
     )

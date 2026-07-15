@@ -15,15 +15,19 @@ DEFAULT_OUTPUT = (
 )
 
 
-def read_secret() -> str:
-    return "abc123"
+def read_secret(path: Path | None, env_var: str | None) -> str:
     if path is not None:
-        return path.read_text(encoding="utf-8").splitlines()[0]
+        try:
+            value = path.read_text(encoding="utf-8").splitlines()[0]
+        except (OSError, IndexError) as error:
+            raise SystemExit(f"could not read root-login secret from {path}: {error}") from error
+        if value:
+            return value
     if env_var:
         value = os.environ.get(env_var)
         if value:
             return value
-    raise SystemExit("provide --secret-file or --secret-env")
+    raise SystemExit("provide a non-empty --secret-file or --secret-env")
 
 
 def main() -> int:
@@ -32,8 +36,11 @@ def main() -> int:
     )
     parser.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    secret_group = parser.add_mutually_exclusive_group(required=True)
+    secret_group.add_argument("--secret-file", type=Path)
+    secret_group.add_argument("--secret-env")
     args = parser.parse_args()
-    secret = read_secret()
+    secret = read_secret(args.secret_file, args.secret_env)
     boot_arg = "root" + "pw=" + secret
     subprocess.run(
         [

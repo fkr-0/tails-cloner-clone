@@ -106,7 +106,7 @@ def plan_command(variant: str, role_map: dict[str, str]) -> dict[str, Any] | Non
     command = ['python3', str(PLANNER), '--variant', variant]
     for role, value in role_map.items():
         command.extend(['--role', f'{role}={value}'])
-    result = subprocess.run(command, check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    result = subprocess.run(command, check=False, text=True, capture_output=True)
     if result.returncode != 0:
         return {
             'success': False,

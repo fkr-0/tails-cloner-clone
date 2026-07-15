@@ -20,7 +20,7 @@ FSUUID_SMOKE_EVIDENCE = LANE_DIR / 'out' / 'fsuuid' / 'fsuuid-direct-kernel-evid
 
 
 def run_json(command: list[str], *, allow_failure: bool = False) -> dict[str, Any]:
-    result = subprocess.run(command, check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    result = subprocess.run(command, check=False, text=True, capture_output=True)
     try:
         payload = json.loads(result.stdout or '{}')
     except json.JSONDecodeError as error:

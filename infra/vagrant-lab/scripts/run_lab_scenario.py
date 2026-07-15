@@ -40,7 +40,7 @@ def run_json(cmd: list[str]) -> dict[str, Any]:
 
 
 def run(cmd: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(cmd, check=check, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    return subprocess.run(cmd, check=check, text=True, capture_output=True)
 
 
 def assert_block_device(device: str) -> None:

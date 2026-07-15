@@ -42,8 +42,7 @@ def validate_log(path: Path) -> dict[str, Any]:
         ['python3', str(VALIDATOR), '--log-file', str(path)],
         check=False,
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
     )
     try:
         payload = json.loads(result.stdout or '{}')

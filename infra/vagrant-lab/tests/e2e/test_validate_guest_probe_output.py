@@ -80,8 +80,7 @@ def run_validator(*args: str) -> subprocess.CompletedProcess[str]:
         ['python3', str(VALIDATOR), *args],
         check=False,
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
     )
 
 

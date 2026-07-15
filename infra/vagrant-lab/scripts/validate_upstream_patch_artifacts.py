@@ -37,7 +37,7 @@ TOUCHED_FILES = [
 
 def run(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
     try:
-        return subprocess.run(args, cwd=cwd, check=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        return subprocess.run(args, cwd=cwd, check=True, text=True, capture_output=True)
     except subprocess.CalledProcessError as exc:
         sys.stderr.write(f'command failed in {cwd}: {args}\n')
         sys.stderr.write(exc.stdout)

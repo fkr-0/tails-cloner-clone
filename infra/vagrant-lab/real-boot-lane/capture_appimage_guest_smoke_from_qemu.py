@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
+import os
 import subprocess
 import sys
-import os
 import tempfile
 import time
 from pathlib import Path
@@ -53,10 +54,8 @@ class CaptureLock:
 
     def __exit__(self, _exc_type: object, _exc: object, _tb: object) -> None:
         if self.acquired:
-            try:
+            with contextlib.suppress(FileNotFoundError):
                 self.path.unlink()
-            except FileNotFoundError:
-                pass
 
 
 def read_marker(serial_log: Path) -> str | None:
@@ -83,8 +82,7 @@ def validate_serial_log(serial_log: Path) -> dict[str, Any]:
         ['python3', str(VALIDATOR), '--log-file', str(serial_log), '--json'],
         check=False,
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
     )
     try:
         payload = json.loads(result.stdout or '{}')

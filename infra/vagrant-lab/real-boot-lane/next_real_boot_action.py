@@ -16,8 +16,7 @@ def load_state() -> dict[str, Any]:
         ['python3', str(STATE_REPORTER), '--json'],
         check=False,
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
     )
     try:
         payload = json.loads(result.stdout or '{}')

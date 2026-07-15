@@ -4,9 +4,8 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
-import os
-import subprocess
 import shlex
+import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -31,7 +30,7 @@ def read_text_if_present(path: Path) -> str:
 
 def run_json(command: list[str]) -> dict[str, Any]:
     try:
-        result = subprocess.run(command, check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        result = subprocess.run(command, check=False, text=True, capture_output=True)
     except OSError:
         return {}
     if result.returncode != 0:
@@ -72,8 +71,7 @@ def running_tails_detection(live_version_path: Path, source_device: str | None) 
                 ['blockdev', '--getsize64', parent_disk_path(running_device)],
                 check=False,
                 text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                capture_output=True,
             )
             if result.returncode == 0:
                 size_bytes = int(result.stdout.strip() or '0')
@@ -166,8 +164,7 @@ def mount_source_for(path: Path) -> str:
             ['findmnt', '--noheadings', '--output', 'SOURCE', '--target', str(path)],
             check=False,
             text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
         )
     except OSError:
         return ''
@@ -184,8 +181,7 @@ def blkid_export(path: str) -> dict[str, str]:
             ['blkid', '-o', 'export', path],
             check=False,
             text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
         )
     except OSError:
         return {}

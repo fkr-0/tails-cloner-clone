@@ -22,8 +22,7 @@ def run(command: list[str], *, cwd: Path = ROOT, timeout: int = 30) -> subproces
         command,
         cwd=str(cwd),
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         timeout=timeout,
         check=False,
     )

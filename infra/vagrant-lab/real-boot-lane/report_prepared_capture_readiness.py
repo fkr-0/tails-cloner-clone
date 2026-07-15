@@ -23,7 +23,7 @@ def run_report(roles: dict[str, Path]) -> dict[str, Any]:
     command = ['python3', str(REPORT_READINESS), '--require-existing-media', '--json']
     for role, path in sorted(roles.items()):
         command.extend(['--role', f'{role}={path}'])
-    result = subprocess.run(command, check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    result = subprocess.run(command, check=False, text=True, capture_output=True)
     try:
         payload = json.loads(result.stdout or '{}')
     except json.JSONDecodeError as error:

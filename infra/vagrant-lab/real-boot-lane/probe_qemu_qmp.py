@@ -66,7 +66,7 @@ class QmpClient:
                 self._read_message()
                 self.command('qmp_capabilities')
                 return
-            except (FileNotFoundError, ConnectionRefusedError, socket.timeout):
+            except (TimeoutError, FileNotFoundError, ConnectionRefusedError):
                 if time.monotonic() >= deadline:
                     raise
                 time.sleep(0.1)

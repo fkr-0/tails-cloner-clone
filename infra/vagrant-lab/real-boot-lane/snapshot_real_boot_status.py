@@ -25,7 +25,7 @@ COMMANDS = {
 
 
 def run_json(command: list[str]) -> dict[str, Any]:
-    completed = subprocess.run(command, check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    completed = subprocess.run(command, check=False, text=True, capture_output=True)
     try:
         payload = json.loads(completed.stdout or '{}')
     except json.JSONDecodeError as error:

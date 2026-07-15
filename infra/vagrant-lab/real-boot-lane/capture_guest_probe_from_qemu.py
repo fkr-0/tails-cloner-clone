@@ -69,7 +69,7 @@ class QmpClient:
                 self._read_message()
                 self.command('qmp_capabilities')
                 return
-            except (FileNotFoundError, ConnectionRefusedError, socket.timeout):
+            except (TimeoutError, FileNotFoundError, ConnectionRefusedError):
                 if time.monotonic() >= deadline:
                     raise
                 time.sleep(0.1)
@@ -128,8 +128,7 @@ def validate_serial_log(serial_log: Path) -> dict[str, Any]:
         ['python3', str(VALIDATOR), '--log-file', str(serial_log)],
         check=False,
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
     )
     try:
         payload = json.loads(result.stdout or '{}')

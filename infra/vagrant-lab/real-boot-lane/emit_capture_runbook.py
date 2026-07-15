@@ -31,7 +31,7 @@ def resolve_plan(variant: str, roles: list[str], require_existing_media: bool) -
         command.append('--require-existing-media')
     for role in roles:
         command.extend(['--role', role])
-    result = subprocess.run(command, check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    result = subprocess.run(command, check=False, text=True, capture_output=True)
     try:
         payload = json.loads(result.stdout or '{}')
     except json.JSONDecodeError as error:

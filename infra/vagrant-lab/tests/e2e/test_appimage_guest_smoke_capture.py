@@ -98,7 +98,7 @@ def test_no_marker_result_is_pending_not_passed(tmp_path, monkeypatch) -> None:
     class FakeProcess:
         returncode = 0
 
-        def communicate(self, timeout=None):
+        def communicate(self, timeout=None):  # noqa: ARG002 - matches subprocess API
             return "", ""
 
         def kill(self):

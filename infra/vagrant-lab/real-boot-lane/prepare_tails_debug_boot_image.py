@@ -20,7 +20,7 @@ REMOVE_ARGS = {'quiet', 'splash', 'noautologin'}
 
 
 def run(command: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(command, check=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    return subprocess.run(command, check=True, text=True, capture_output=True)
 
 
 def patch_kernel_args(line: str, extra_kernel_args: list[str] | None = None) -> str:
