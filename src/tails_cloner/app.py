@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import subprocess
 import sys
 import tkinter as tk
 import webbrowser
 from collections.abc import Callable
 from contextlib import suppress
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 from queue import Empty, SimpleQueue
 from tempfile import NamedTemporaryFile
@@ -23,6 +25,7 @@ from tails_cloner.config import (
 )
 from tails_cloner.controller import ApplicationController
 from tails_cloner.models import SourceMode
+from tails_cloner.network import fetch_text_torified, should_use_torify
 from tails_cloner.planner import OperationKind
 from tails_cloner.verification import parse_sha256_text, sha256_file, verify_sha256
 
@@ -460,7 +463,7 @@ class TailsClonerApp(tk.Tk):
     def _set_window_class(self) -> None:
         # Some Tk builds may not expose wm class control consistently.
         with suppress(tk.TclError):
-            self.tk.call("wm", "class", self._w, "tails-cloner-clone")
+            self.tk.call("wm", "class", getattr(self, "_w", "."), "tails-cloner-clone")
 
     def _set_header_icon(self) -> None:
         icon_path = self._asset_path("tails-cloner-clone-32.png")
@@ -473,10 +476,10 @@ class TailsClonerApp(tk.Tk):
         except tk.TclError:
             pass
 
-    def _on_link_enter(self, _event=None) -> None:
+    def _on_link_enter(self, _event: tk.Event | None = None) -> None:
         self.downloads_link_label.configure(fg="#ffd166", font=("TkDefaultFont", FONT_SIZE_MEDIUM, "underline"))
 
-    def _on_link_leave(self, _event=None) -> None:
+    def _on_link_leave(self, _event: tk.Event | None = None) -> None:
         self.downloads_link_label.configure(
             fg="#7db0ff" if self.dark_mode_var.get() else "#2f6db5",
             font=("TkDefaultFont", FONT_SIZE_MEDIUM),
@@ -555,7 +558,7 @@ class TailsClonerApp(tk.Tk):
 
     def _sync_experimental_state(self) -> None:
         state = "normal" if self.experimental_enabled_var.get() else "disabled"
-        widgets = [
+        widgets: list[tk.Widget] = [
             self.boot_order_list,
             self.boot_order_entry,
             self.boot_order_add_button,
@@ -566,7 +569,7 @@ class TailsClonerApp(tk.Tk):
         ]
         for widget in widgets:
             with suppress(tk.TclError):
-                widget.config(state=state)
+                widget.configure({"state": state})
         self._sync_post_write_options()
 
     def _boot_order_entries(self) -> list[str]:
@@ -592,7 +595,7 @@ class TailsClonerApp(tk.Tk):
         options.boot_loader_order.entries = self._boot_order_entries() if self.experimental_enabled_var.get() else []
 
     def _selected_boot_order_index(self) -> int | None:
-        selection = self.boot_order_list.curselection()
+        selection = self.boot_order_list.curselection()  # type: ignore[no-untyped-call]
         return int(selection[0]) if selection else None
 
     def _move_boot_order_entry(self, direction: int) -> None:
@@ -645,7 +648,7 @@ class TailsClonerApp(tk.Tk):
         if not entries:
             self._queue_ui(lambda: self.boot_loader_status_var.set("No boot-loader entries found in selected source."))
             return
-        self._queue_ui(lambda e=entries: self._apply_parsed_boot_order_entries(e))
+        self._queue_ui(partial(self._apply_parsed_boot_order_entries, entries))
 
     def _apply_parsed_boot_order_entries(self, entries: list[str]) -> None:
         self._set_boot_order_entries(entries)
@@ -719,13 +722,13 @@ class TailsClonerApp(tk.Tk):
             checksum = token if len(token) >= 32 else ""
         except Exception:
             checksum = ""
-        self._queue_ui(lambda c=checksum: self.suggested_checksum_var.set(c))
+        self._queue_ui(partial(self.suggested_checksum_var.set, checksum))
 
-    def _add_readonly_row(self, parent: ttk.Frame, row: int, label: str, variable: tk.StringVar) -> None:
+    def _add_readonly_row(self, parent: tk.Misc, row: int, label: str, variable: tk.StringVar) -> None:
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="nw", pady=(0, 6), padx=(0, 8))
         entry = ttk.Entry(parent, textvariable=variable)
         entry.grid(row=row, column=1, sticky="ew", pady=(0, 6))
-        entry.state(["readonly"])
+        entry.configure(state="readonly")
 
     def _browse_image(self) -> None:
         path = filedialog.askopenfilename(
@@ -735,17 +738,17 @@ class TailsClonerApp(tk.Tk):
         if path:
             self.image_path_var.set(path)
 
-    def _on_version_selected(self, _event=None) -> None:
-        selection = self.versions_list.curselection()
+    def _on_version_selected(self, _event: tk.Event | None = None) -> None:
+        selection = self.versions_list.curselection()  # type: ignore[no-untyped-call]
         if not selection:
             return
         version = self.versions_list.get(selection[0])
         self.controller.select_version(version)
         self._sync_selected_version_fields()
 
-    def _on_version_key_nav(self, _event=None) -> None:
+    def _on_version_key_nav(self, _event: tk.Event | None = None) -> None:
         """Handle keyboard navigation in versions list."""
-        selection = self.versions_list.curselection()
+        selection = self.versions_list.curselection()  # type: ignore[no-untyped-call]
         if not selection:
             return
         version = self.versions_list.get(selection[0])
@@ -780,6 +783,11 @@ class TailsClonerApp(tk.Tk):
             self.attached_source_status_var.set(f"Attached source validation failed: {error}")
             messagebox.showerror("Attached source validation failed", str(error))
 
+    @staticmethod
+    def _require_https_remote_url(url: str, purpose: str) -> None:
+        if urlparse(url).scheme.casefold() != "https":
+            raise ValueError(f"{purpose} URL must use HTTPS: {url}")
+
     def _start_remote_download(self) -> None:
         img_url = self.controller.state.selected_image_url.strip()
         checksum_url = self.controller.state.selected_checksum_url.strip()
@@ -788,6 +796,12 @@ class TailsClonerApp(tk.Tk):
             return
         if not checksum_url:
             self.controller.state.status_message = "Remote IMG has no published SHA-256 checksum; refusing download."
+            return
+        try:
+            self._require_https_remote_url(img_url, "Remote IMG")
+            self._require_https_remote_url(checksum_url, "Remote checksum")
+        except ValueError as error:
+            self.controller.state.status_message = str(error)
             return
 
         filename = Path(urlparse(img_url).path).name or f"tails-{self.controller.state.selected_version}.img"
@@ -801,6 +815,53 @@ class TailsClonerApp(tk.Tk):
             filename,
         )
 
+    def _read_remote_checksum(self, checksum_url: str) -> str:
+        self._require_https_remote_url(checksum_url, "Remote checksum")
+        if should_use_torify():
+            checksum_text = fetch_text_torified(checksum_url, 30)
+            if len(checksum_text.encode("utf-8")) > 256 * 1024:
+                raise ValueError("Published checksum response is unexpectedly large")
+            return checksum_text
+
+        with urlopen(checksum_url, timeout=30) as checksum_response:  # noqa: S310 - HTTPS enforced
+            effective_url = str(checksum_response.geturl()) if hasattr(checksum_response, "geturl") else checksum_url
+            self._require_https_remote_url(effective_url, "Remote checksum redirect")
+            checksum_payload: bytes = checksum_response.read(256 * 1024 + 1)
+        if len(checksum_payload) > 256 * 1024:
+            raise ValueError("Published checksum response is unexpectedly large")
+        return checksum_payload.decode("utf-8", errors="strict")
+
+    def _download_remote_image_to(self, img_url: str, partial_path: Path) -> None:
+        self._require_https_remote_url(img_url, "Remote IMG")
+        if should_use_torify():
+            subprocess.run(
+                [
+                    "torify",
+                    "curl",
+                    "-fL",
+                    "--proto",
+                    "=https",
+                    "--proto-redir",
+                    "=https",
+                    "--output",
+                    str(partial_path),
+                    img_url,
+                ],
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+            return
+
+        with (
+            urlopen(img_url, timeout=60) as response,  # noqa: S310 - HTTPS enforced
+            partial_path.open("wb") as out,
+        ):
+            effective_url = str(response.geturl()) if hasattr(response, "geturl") else img_url
+            self._require_https_remote_url(effective_url, "Remote IMG redirect")
+            while chunk := response.read(1024 * 1024):
+                out.write(chunk)
+
     def _download_selected_remote_image(self, img_url: str, checksum_url: str, filename: str) -> None:
         cache_dir = Path.home() / ".cache" / "tails-cloner-clone" / "downloads"
         cache_dir.mkdir(parents=True, exist_ok=True)
@@ -808,11 +869,7 @@ class TailsClonerApp(tk.Tk):
         partial_path: Path | None = None
 
         try:
-            with urlopen(checksum_url, timeout=30) as checksum_response:  # noqa: S310 - selected Tails metadata
-                checksum_payload = checksum_response.read(256 * 1024 + 1)
-            if len(checksum_payload) > 256 * 1024:
-                raise ValueError("Published checksum response is unexpectedly large")
-            checksum_text = checksum_payload.decode("utf-8", errors="strict")
+            checksum_text = self._read_remote_checksum(checksum_url)
             expected_digest = parse_sha256_text(checksum_text, expected_filename=filename)
 
             with NamedTemporaryFile(
@@ -823,20 +880,18 @@ class TailsClonerApp(tk.Tk):
                 delete=False,
             ) as out:
                 partial_path = Path(out.name)
-                with urlopen(img_url, timeout=60) as response:  # noqa: S310 - selected Tails image
-                    while chunk := response.read(1024 * 1024):
-                        out.write(chunk)
+            self._download_remote_image_to(img_url, partial_path)
 
             actual_digest = verify_sha256(partial_path, expected_digest)
             partial_path.replace(target_path)
             partial_path = None
             self._queue_ui(
-                lambda: self._apply_remote_download_success(target_path, filename, actual_digest)
+                partial(self._apply_remote_download_success, target_path, filename, actual_digest)
             )
         except Exception as error:  # noqa: BLE001 - visible UI feedback
             if partial_path is not None:
                 partial_path.unlink(missing_ok=True)
-            self._queue_ui(lambda message=str(error): self._apply_remote_download_failure(message))
+            self._queue_ui(partial(self._apply_remote_download_failure, str(error)))
 
     def _show_remote_download_started(self, filename: str) -> None:
         self.remote_state_var.set("downloading; verification pending")
@@ -860,7 +915,7 @@ class TailsClonerApp(tk.Tk):
         self.source_status_var.set(f"Download/verification failed: {message}")
         self.controller.state.status_message = f"Download/verification failed: {message}"
 
-    def _on_device_selected(self, _event=None) -> None:
+    def _on_device_selected(self, _event: tk.Event | None = None) -> None:
         self._update_device_warnings_and_button()
 
     def _confirm_and_clone(self) -> None:
@@ -925,7 +980,7 @@ class TailsClonerApp(tk.Tk):
 
         try:
             def on_progress(message: str) -> None:
-                self._queue_ui(lambda m=message: self.progress_label.config(text=m))
+                self._queue_ui(partial(self._set_progress_text, message))
 
             if is_upgrade:
                 self.controller.upgrade_selected_image(image_path, device_path, progress_callback=on_progress)
@@ -936,7 +991,10 @@ class TailsClonerApp(tk.Tk):
         except Exception as error:  # noqa: BLE001 - converted into visible UI feedback
             error_message = str(error)
             self.controller.state.status_message = f"{operation_label.title()} failed: {error_message}"
-            self._queue_ui(lambda message=error_message: self._finish_write_failure(operation_label, message))
+            self._queue_ui(partial(self._finish_write_failure, operation_label, error_message))
+
+    def _set_progress_text(self, message: str) -> None:
+        self.progress_label.configure(text=message)
 
     def _finish_write_success(self, title: str, message: str) -> None:
         self._write_in_progress = False
@@ -996,8 +1054,8 @@ class TailsClonerApp(tk.Tk):
         current_mode = self.controller.state.source_mode
         if current_mode == SourceMode.RUNNING:
             self.source_mode_var.set("running")
-        self.source_running_radio.state(
-            ["!disabled"] if self.controller.state.running_tails_available else ["disabled"]
+        self.source_running_radio.configure(
+            state="normal" if self.controller.state.running_tails_available else "disabled"
         )
         if current_mode == SourceMode.ATTACHED:
             self.source_mode_var.set("attached")
@@ -1006,27 +1064,27 @@ class TailsClonerApp(tk.Tk):
         elif current_mode == SourceMode.REMOTE:
             self.source_mode_var.set("remote")
 
-        attached_widgets = [
+        attached_widgets: list[tk.Widget] = [
             self.attached_source_device_entry,
             self.attached_source_mount_entry,
             self.attached_source_validate_button,
         ]
         attached_state = "normal" if current_mode == SourceMode.ATTACHED else "disabled"
         for widget in attached_widgets:
-            widget.state(["!disabled"] if attached_state == "normal" else ["disabled"])
+            widget.configure({"state": attached_state})
 
         if current_mode == SourceMode.LOCAL:
-            self.image_entry.state(["!disabled"])
-            self.browse_button.state(["!disabled"])
-            self.download_button.state(["disabled"])
+            self.image_entry.configure(state="normal")
+            self.browse_button.configure(state="normal")
+            self.download_button.configure(state="disabled")
         elif current_mode == SourceMode.REMOTE:
-            self.image_entry.state(["disabled"])
-            self.browse_button.state(["disabled"])
-            self.download_button.state(["!disabled"])
+            self.image_entry.configure(state="disabled")
+            self.browse_button.configure(state="disabled")
+            self.download_button.configure(state="normal")
         else:
-            self.image_entry.state(["disabled"])
-            self.browse_button.state(["disabled"])
-            self.download_button.state(["disabled"])
+            self.image_entry.configure(state="disabled")
+            self.browse_button.configure(state="disabled")
+            self.download_button.configure(state="disabled")
 
     def _sync_versions(self) -> None:
         snapshot = tuple(entry.version for entry in self.controller.state.available_versions)

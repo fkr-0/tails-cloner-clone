@@ -6,7 +6,7 @@ import ssl
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 from urllib.request import urlopen
 
 from tails_cloner.config import (
@@ -62,7 +62,13 @@ def is_stable_version(version: str) -> bool:
 
 
 
+def _require_https(url: str, *, purpose: str) -> None:
+    if urlparse(url).scheme.casefold() != "https":
+        raise ValueError(f"{purpose} URL must use HTTPS: {url}")
+
+
 def fetch_text(url: str, timeout_seconds: int) -> str:
+    _require_https(url, purpose="Remote catalog")
     if should_use_torify():
         return fetch_text_torified(url, timeout_seconds)
 
@@ -75,7 +81,9 @@ def fetch_text(url: str, timeout_seconds: int) -> str:
         # The platform trust store remains active when certifi is unavailable.
         pass
 
-    with urlopen(url, timeout=timeout_seconds, context=ssl_context) as response:  # noqa: S310 - remote catalog is user-configurable app input
+    with urlopen(url, timeout=timeout_seconds, context=ssl_context) as response:  # noqa: S310 - HTTPS enforced above
+        effective_url = str(response.geturl()) if hasattr(response, "geturl") else url
+        _require_https(effective_url, purpose="Remote catalog redirect")
         payload: bytes = response.read()
     return payload.decode("utf-8", errors="replace")
 

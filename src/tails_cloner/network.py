@@ -37,7 +37,18 @@ def fetch_text_direct(url: str, timeout_seconds: int, ssl_context: ssl.SSLContex
 
 def fetch_text_torified(url: str, timeout_seconds: int) -> str:
     result = subprocess.run(
-        ["torify", "curl", "-fsSL", "--max-time", str(timeout_seconds), url],
+        [
+            "torify",
+            "curl",
+            "-fsSL",
+            "--proto",
+            "=https",
+            "--proto-redir",
+            "=https",
+            "--max-time",
+            str(timeout_seconds),
+            url,
+        ],
         check=True,
         text=True,
         capture_output=True,

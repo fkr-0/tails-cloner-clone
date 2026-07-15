@@ -5,21 +5,25 @@ import os
 import sys
 from collections.abc import Callable, Sequence
 
-from tails_cloner.cli import looks_like_cli_invocation, main as cli_main
+from tails_cloner.cli import looks_like_cli_invocation
+from tails_cloner.cli import main as cli_main
 from tails_cloner.config import DEFAULT_REMOTE_INDEX_URL
 from tails_cloner.controller import ApplicationController
 from tails_cloner.creator import clone_image_to_device
 from tails_cloner.devices import DeviceService
-from tails_cloner.models import AppState, PostWriteOptions
+from tails_cloner.models import AppState, PostWriteOptions, VersionAssets
 from tails_cloner.remote_index import RemoteVersionIndex
-from tails_cloner.upgrader import upgrade_tails_system_partition, upgrade_tails_system_partition_from_device
+from tails_cloner.upgrader import (
+    upgrade_tails_system_partition,
+    upgrade_tails_system_partition_from_device,
+)
 
 
 class VersionService:
     def __init__(self, index: RemoteVersionIndex) -> None:
         self._index = index
 
-    def fetch_versions(self) -> list:
+    def fetch_versions(self) -> list[VersionAssets]:
         return self._index.fetch_versions()
 
 

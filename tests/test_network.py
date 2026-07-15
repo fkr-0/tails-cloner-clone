@@ -26,4 +26,15 @@ def test_fetch_text_torified_uses_torify_curl(monkeypatch) -> None:
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     assert network.fetch_text_torified("https://example.invalid", 11) == "ok"
-    assert seen["command"] == ["torify", "curl", "-fsSL", "--max-time", "11", "https://example.invalid"]
+    assert seen["command"] == [
+        "torify",
+        "curl",
+        "-fsSL",
+        "--proto",
+        "=https",
+        "--proto-redir",
+        "=https",
+        "--max-time",
+        "11",
+        "https://example.invalid",
+    ]

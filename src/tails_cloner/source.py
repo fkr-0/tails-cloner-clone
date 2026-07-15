@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import os
 import re
-import shutil
 import subprocess
+from contextlib import suppress
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -71,9 +71,9 @@ def get_running_tails_version() -> str | None:
     version_file = "/lib/live/mount/medium/live/Tails.version"
     if os.path.exists(version_file):
         try:
-            with open(version_file, "r") as f:
+            with open(version_file) as f:
                 return f.read().strip()
-        except (OSError, IOError):
+        except OSError:
             pass
     return None
 
@@ -86,16 +86,13 @@ def get_running_tails_size_bytes() -> int:
 
     total_size = 0
     try:
-        for dirpath, dirnames, filenames in os.walk(tails_mount):
+        for dirpath, _dirnames, filenames in os.walk(tails_mount):
             for filename in filenames:
                 filepath = os.path.join(dirpath, filename)
                 if os.path.exists(filepath) and not os.path.islink(filepath):
-                    try:
+                    with suppress(OSError):
                         total_size += os.path.getsize(filepath)
-                    except (OSError, IOError):
-                        # Skip files we can't read
-                        pass
-    except (OSError, IOError):
+    except OSError:
         pass
 
     return total_size

@@ -6,8 +6,8 @@ from io import StringIO
 from unittest import mock
 
 from tails_cloner import cli
-from tails_cloner.models import BlockDevice
 from tails_cloner.__main__ import main as package_main
+from tails_cloner.models import BlockDevice
 
 
 def capture_json(callable_, *args):
@@ -25,9 +25,11 @@ def test_cli_help_is_available() -> None:
 
 
 def test_package_main_routes_cli_subcommands() -> None:
-    with mock.patch("tails_cloner.__main__.cli_main", return_value=0) as cli_main:
-        with mock.patch("tails_cloner.app.TailsClonerApp", side_effect=AssertionError("GUI imported on CLI path")):
-            assert package_main(["devices", "list"]) == 0
+    with (
+        mock.patch("tails_cloner.__main__.cli_main", return_value=0) as cli_main,
+        mock.patch("tails_cloner.app.TailsClonerApp", side_effect=AssertionError("GUI imported on CLI path")),
+    ):
+        assert package_main(["devices", "list"]) == 0
     cli_main.assert_called_once_with(["devices", "list"])
 
 

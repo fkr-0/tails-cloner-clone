@@ -58,10 +58,12 @@ class _FakeLabel:
 
 class _FakeWidget:
     def __init__(self) -> None:
-        self.state_calls = []
+        self.state_calls: list[str] = []
 
-    def state(self, value) -> None:
-        self.state_calls.append(value)
+    def configure(self, options: dict[str, str] | None = None, **kwargs: str) -> None:
+        state = kwargs.get("state") or (options or {}).get("state")
+        if state is not None:
+            self.state_calls.append(state)
 
 
 class _FakeButton(_FakeLabel):
@@ -161,7 +163,7 @@ class AppWindowClassTests(unittest.TestCase):
 
         app._sync_source_mode()
 
-        self.assertEqual(app.source_running_radio.state_calls[-1], ["!disabled"])
+        self.assertEqual(app.source_running_radio.state_calls[-1], "normal")
         self.assertEqual(app.source_mode_var.get(), "local")
 
     def test_idle_device_scan_does_not_overwrite_operation_status(self) -> None:
@@ -218,6 +220,7 @@ class AppWindowClassTests(unittest.TestCase):
         with (
             TemporaryDirectory() as tmpdir,
             mock.patch("tails_cloner.app.Path.home", return_value=Path(tmpdir)),
+            mock.patch("tails_cloner.app.should_use_torify", return_value=False),
             mock.patch(
                 "tails_cloner.app.urlopen",
                 side_effect=[
@@ -253,6 +256,7 @@ class AppWindowClassTests(unittest.TestCase):
             target.write_bytes(b"previous verified image")
             with (
                 mock.patch("tails_cloner.app.Path.home", return_value=Path(tmpdir)),
+                mock.patch("tails_cloner.app.should_use_torify", return_value=False),
                 mock.patch(
                     "tails_cloner.app.urlopen",
                     side_effect=[
@@ -273,6 +277,44 @@ class AppWindowClassTests(unittest.TestCase):
 
         self.assertEqual(len(failures), 1)
         self.assertIn("SHA-256 mismatch", failures[0])
+
+    def test_remote_download_rejects_plain_http_before_scheduling(self) -> None:
+        app = TailsClonerApp.__new__(TailsClonerApp)
+        state = type(
+            "State",
+            (),
+            {
+                "selected_image_url": "http://example.invalid/tails.img",
+                "selected_checksum_url": "https://example.invalid/tails.img.sha256",
+                "selected_version": "7.7.2",
+                "status_message": "",
+                "verified_image_path": "old",
+                "verified_image_sha256": "old",
+            },
+        )()
+        executor = mock.Mock()
+        app.controller = type("Controller", (), {"state": state, "executor": executor})()
+
+        app._start_remote_download()
+
+        executor.submit.assert_not_called()
+        self.assertIn("must use HTTPS", state.status_message)
+
+    def test_torified_image_download_enforces_https_protocols(self) -> None:
+        app = TailsClonerApp.__new__(TailsClonerApp)
+        with TemporaryDirectory() as tmpdir:
+            target = Path(tmpdir) / "tails.img.part"
+            with (
+                mock.patch("tails_cloner.app.should_use_torify", return_value=True),
+                mock.patch("tails_cloner.app.subprocess.run") as run,
+            ):
+                app._download_remote_image_to("https://example.invalid/tails.img", target)
+
+        command = run.call_args.args[0]
+        self.assertEqual(command[:3], ["torify", "curl", "-fL"])
+        self.assertIn("--proto", command)
+        self.assertIn("=https", command)
+        self.assertIn("--proto-redir", command)
 
     def test_upgrade_plan_names_attached_live_source(self) -> None:
         app = TailsClonerApp.__new__(TailsClonerApp)

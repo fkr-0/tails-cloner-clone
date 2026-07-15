@@ -4,14 +4,12 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from tails_cloner.source import (
-    is_running_tails,
-    get_running_tails_version,
-    get_running_tails_device,
-    get_running_tails_size_bytes,
-    get_parent_disk_path,
     AttachedLiveSystemSource,
     RunningLiveSystemSource,
     SourceType,
+    get_parent_disk_path,
+    get_running_tails_version,
+    is_running_tails,
 )
 
 
@@ -40,9 +38,11 @@ class RunningTailsDetectionTests(unittest.TestCase):
         def mock_isdir(path):
             return path == "/lib/live/mount/medium"
 
-        with patch("os.path.exists", side_effect=mock_exists):
-            with patch("os.path.isdir", side_effect=mock_isdir):
-                self.assertTrue(is_running_tails())
+        with (
+            patch("os.path.exists", side_effect=mock_exists),
+            patch("os.path.isdir", side_effect=mock_isdir),
+        ):
+            self.assertTrue(is_running_tails())
 
 
 class RunningTailsVersionTests(unittest.TestCase):
@@ -51,10 +51,9 @@ class RunningTailsVersionTests(unittest.TestCase):
         version_content = "6.12\n"
         mock_open = unittest.mock.mock_open(read_data=version_content)
 
-        with patch("os.path.exists", return_value=True):
-            with patch("builtins.open", mock_open):
-                version = get_running_tails_version()
-                self.assertEqual(version, "6.12")
+        with patch("os.path.exists", return_value=True), patch("builtins.open", mock_open):
+            version = get_running_tails_version()
+            self.assertEqual(version, "6.12")
 
     def test_get_version_returns_none_when_missing(self) -> None:
         """Return None when version file doesn't exist."""
