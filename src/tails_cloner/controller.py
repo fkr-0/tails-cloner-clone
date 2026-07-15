@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from concurrent.futures import Executor, ThreadPoolExecutor
 from pathlib import Path
+from typing import Protocol
 
-from tails_cloner.models import AppState, BlockDevice, SourceMode, VersionAssets
+from tails_cloner.models import AppState, BlockDevice, PostWriteOptions, SourceMode, VersionAssets
 from tails_cloner.planner import OperationKind, OperationPlan, OperationSource, plan_operation
 from tails_cloner.source import (
     AttachedLiveSystemSource,
@@ -13,6 +15,41 @@ from tails_cloner.source import (
     is_running_tails,
 )
 from tails_cloner.verification import verify_sha256
+
+ProgressCallback = Callable[[str], None]
+
+
+class VersionServiceProtocol(Protocol):
+    def fetch_versions(self) -> list[VersionAssets]: ...
+
+
+class DeviceServiceProtocol(Protocol):
+    def list_devices(self) -> list[BlockDevice]: ...
+
+
+class CloneServiceProtocol(Protocol):
+    def clone_image(
+        self,
+        image_path: str,
+        device_path: str,
+        progress_callback: ProgressCallback | None = None,
+        post_write_options: PostWriteOptions | None = None,
+    ) -> None: ...
+
+    def upgrade_image(
+        self,
+        image_path: str,
+        device_path: str,
+        progress_callback: ProgressCallback | None = None,
+    ) -> None: ...
+
+    def upgrade_from_device(
+        self,
+        source_device: str,
+        device_path: str,
+        progress_callback: ProgressCallback | None = None,
+    ) -> None: ...
+
 
 """Application controller for Tails Cloner.
 
@@ -32,9 +69,9 @@ class ApplicationController:
     def __init__(
         self,
         state: AppState,
-        version_service,
-        device_service,
-        clone_service,
+        version_service: VersionServiceProtocol,
+        device_service: DeviceServiceProtocol,
+        clone_service: CloneServiceProtocol,
         executor: Executor | None = None,
     ) -> None:
         """Initialize the controller.
@@ -310,7 +347,12 @@ class ApplicationController:
         self._verify_recorded_image_integrity(actual_image_path)
         return actual_image_path
 
-    def clone_selected_image(self, image_path: str | None, device_path: str, progress_callback=None) -> None:
+    def clone_selected_image(
+        self,
+        image_path: str | None,
+        device_path: str,
+        progress_callback: ProgressCallback | None = None,
+    ) -> None:
         """Install or reinstall an image to the target device with a whole-device write."""
         if self.state.source_mode == SourceMode.ATTACHED:
             raise RuntimeError("Attached live sources are only supported for persistence-preserving upgrades.")
@@ -332,7 +374,12 @@ class ApplicationController:
         )
         self.state.status_message = "Installation completed successfully."
 
-    def upgrade_selected_image(self, image_path: str | None, device_path: str, progress_callback=None) -> None:
+    def upgrade_selected_image(
+        self,
+        image_path: str | None,
+        device_path: str,
+        progress_callback: ProgressCallback | None = None,
+    ) -> None:
         """Upgrade an existing Tails target while preserving Persistent Storage."""
         if self.state.source_mode == SourceMode.ATTACHED:
             self.upgrade_selected_from_attached_live_source(device_path, progress_callback=progress_callback)
@@ -360,7 +407,11 @@ class ApplicationController:
         )
         self.state.status_message = "Upgrade completed successfully. Existing Persistent Storage, if present, was preserved."
 
-    def upgrade_selected_from_running_live_source(self, device_path: str, progress_callback=None) -> None:
+    def upgrade_selected_from_running_live_source(
+        self,
+        device_path: str,
+        progress_callback: ProgressCallback | None = None,
+    ) -> None:
         """Upgrade from the live medium currently running this Tails session."""
         if not self.state.running_tails_device:
             raise RuntimeError("The running Tails source device could not be determined.")
@@ -388,7 +439,11 @@ class ApplicationController:
             "Existing Persistent Storage, if present, was preserved."
         )
 
-    def upgrade_selected_from_attached_live_source(self, device_path: str, progress_callback=None) -> None:
+    def upgrade_selected_from_attached_live_source(
+        self,
+        device_path: str,
+        progress_callback: ProgressCallback | None = None,
+    ) -> None:
         """Upgrade from an attached live source device without rewriting target persistence."""
         if not self.state.attached_live_source_device:
             raise RuntimeError("No attached Tails live source has been selected.")

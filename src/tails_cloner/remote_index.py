@@ -15,7 +15,7 @@ from tails_cloner.config import (
     VERSIONS_REFRESH_TIMEOUT_SECONDS,
 )
 from tails_cloner.models import VersionAssets
-from tails_cloner.network import fetch_text_torified, is_cert_verification_error, should_use_torify
+from tails_cloner.network import fetch_text_torified, should_use_torify
 
 _VERSION_RE = re.compile(r"^\d+(?:\.\d+)+$")
 _HISTORY_DIR_RE = re.compile(r"^tails-amd64-(\d+(?:\.\d+)+)/?$")
@@ -68,27 +68,22 @@ def fetch_text(url: str, timeout_seconds: int) -> str:
 
     ssl_context = ssl.create_default_context()
     try:
-        import certifi
+        import certifi  # type: ignore[import-not-found]
 
         ssl_context.load_verify_locations(cafile=certifi.where())
-    except Exception:
-        # Fall back to platform trust store when certifi is unavailable.
+    except ImportError:
+        # The platform trust store remains active when certifi is unavailable.
         pass
-    try:
-        with urlopen(url, timeout=timeout_seconds, context=ssl_context) as response:  # noqa: S310 - remote catalog is user-configurable app input
-            return response.read().decode("utf-8", errors="replace")
-    except Exception as error:
-        if not is_cert_verification_error(error):
-            raise
-        # Some AppImage environments ship without a complete trust store.
-        insecure_context = ssl._create_unverified_context()  # noqa: SLF001
-        with urlopen(url, timeout=timeout_seconds, context=insecure_context) as response:  # noqa: S310 - remote catalog is user-configurable app input
-            return response.read().decode("utf-8", errors="replace")
+
+    with urlopen(url, timeout=timeout_seconds, context=ssl_context) as response:  # noqa: S310 - remote catalog is user-configurable app input
+        payload: bytes = response.read()
+    return payload.decode("utf-8", errors="replace")
 
 
 
 def fetch_json(url: str, timeout_seconds: int) -> object:
-    return json.loads(fetch_text(url, timeout_seconds))
+    payload: object = json.loads(fetch_text(url, timeout_seconds))
+    return payload
 
 
 

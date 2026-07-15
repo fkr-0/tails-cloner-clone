@@ -3,10 +3,10 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from tails_cloner.config import DEFAULT_REMOTE_INDEX_URL
 from tails_cloner.controller import ApplicationController
@@ -165,20 +165,21 @@ def handle_devices(args: argparse.Namespace) -> int:
 
 
 def handle_source(args: argparse.Namespace) -> int:
+    payload: dict[str, object]
     if args.source_command == "running":
-        source = RunningLiveSystemSource()
+        running_source = RunningLiveSystemSource()
         payload = {
-            "running_tails_available": source.exists,
-            "version": source.version or "",
-            "device": source.device or "",
-            "parent_device": get_parent_disk_path(source.device or ""),
-            "mount_point": str(source.mount_point),
-            "iso_path": str(source.get_iso_path() or ""),
+            "running_tails_available": running_source.exists,
+            "version": running_source.version or "",
+            "device": running_source.device or "",
+            "parent_device": get_parent_disk_path(running_source.device or ""),
+            "mount_point": str(running_source.mount_point),
+            "iso_path": str(running_source.get_iso_path() or ""),
         }
     elif args.source_command == "validate-attached":
-        source = AttachedLiveSystemSource(device_path=args.device, mount_point=Path(args.mount_point))
+        attached_source = AttachedLiveSystemSource(device_path=args.device, mount_point=Path(args.mount_point))
         try:
-            source.validate()
+            attached_source.validate()
             valid = True
             error = ""
         except Exception as exc:  # noqa: BLE001 - surfaced as CLI validation error
@@ -187,12 +188,12 @@ def handle_source(args: argparse.Namespace) -> int:
         payload = {
             "valid": valid,
             "error": error,
-            "device": source.device_path,
-            "parent_device": source.parent_device,
-            "mount_point": str(source.mount_point),
-            "version": source.version or "",
-            "live_path": str(source.get_liveos_path()),
-            "iso_path": str(source.get_iso_path() or ""),
+            "device": attached_source.device_path,
+            "parent_device": attached_source.parent_device,
+            "mount_point": str(attached_source.mount_point),
+            "version": attached_source.version or "",
+            "live_path": str(attached_source.get_liveos_path()),
+            "iso_path": str(attached_source.get_iso_path() or ""),
         }
     else:
         raise SystemExit(f"unknown source command: {args.source_command}")
@@ -344,7 +345,8 @@ def _normalize_global_options(argv: Sequence[str] | None) -> list[str] | None:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_cli_parser()
     args = parser.parse_args(_normalize_global_options(argv))
-    return args.func(args)
+    handler = cast(Callable[[argparse.Namespace], int], args.func)
+    return handler(args)
 
 
 def looks_like_cli_invocation(argv: Sequence[str]) -> bool:

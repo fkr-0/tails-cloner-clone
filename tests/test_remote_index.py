@@ -61,51 +61,31 @@ class RemoteIndexTests(unittest.TestCase):
         self.assertEqual(mock_urlopen.call_count, 1)
         self.assertIn("context", mock_urlopen.call_args.kwargs)
 
-    def test_fetch_text_falls_back_to_unverified_context_on_cert_error(self) -> None:
-        class FakeResponse:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                return False
-
-            def read(self) -> bytes:
-                return b"ok-fallback"
-
+    def test_fetch_text_fails_closed_on_certificate_error(self) -> None:
         with (
             patch("tails_cloner.remote_index.should_use_torify", return_value=False),
             patch(
                 "tails_cloner.remote_index.urlopen",
-                side_effect=[SSLCertVerificationError("bad cert"), FakeResponse()],
+                side_effect=SSLCertVerificationError("bad cert"),
             ) as mock_urlopen,
+            self.assertRaises(SSLCertVerificationError),
         ):
-            text = fetch_text("https://example.invalid/catalog", 7)
+            fetch_text("https://example.invalid/catalog", 7)
 
-        self.assertEqual(text, "ok-fallback")
-        self.assertEqual(mock_urlopen.call_count, 2)
+        self.assertEqual(mock_urlopen.call_count, 1)
 
-    def test_fetch_text_falls_back_when_cert_error_is_wrapped_in_urlerror(self) -> None:
-        class FakeResponse:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                return False
-
-            def read(self) -> bytes:
-                return b"ok-fallback-wrapped"
-
+    def test_fetch_text_fails_closed_on_wrapped_certificate_error(self) -> None:
         with (
             patch("tails_cloner.remote_index.should_use_torify", return_value=False),
             patch(
                 "tails_cloner.remote_index.urlopen",
-                side_effect=[URLError(SSLCertVerificationError("bad cert")), FakeResponse()],
+                side_effect=URLError(SSLCertVerificationError("bad cert")),
             ) as mock_urlopen,
+            self.assertRaises(URLError),
         ):
-            text = fetch_text("https://example.invalid/catalog", 7)
+            fetch_text("https://example.invalid/catalog", 7)
 
-        self.assertEqual(text, "ok-fallback-wrapped")
-        self.assertEqual(mock_urlopen.call_count, 2)
+        self.assertEqual(mock_urlopen.call_count, 1)
 
     def test_parse_directory_listing_extracts_and_sorts_versions(self) -> None:
         html = """

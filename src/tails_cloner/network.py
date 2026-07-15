@@ -31,7 +31,8 @@ def should_use_torify() -> bool:
 
 def fetch_text_direct(url: str, timeout_seconds: int, ssl_context: ssl.SSLContext) -> str:
     with urlopen(url, timeout=timeout_seconds, context=ssl_context) as response:  # noqa: S310 - app-managed catalog URL
-        return response.read().decode("utf-8", errors="replace")
+        payload: bytes = response.read()
+    return payload.decode("utf-8", errors="replace")
 
 
 def fetch_text_torified(url: str, timeout_seconds: int) -> str:
