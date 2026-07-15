@@ -109,7 +109,7 @@ def test_inspect_drive_detects_running_tails_booted_from_same_disk() -> None:
 
 
 def test_inspect_drive_handles_missing_block_device() -> None:
-    payload = {"blockdevices": []}
+    payload: dict[str, list[object]] = {"blockdevices": []}
 
     def fake_run(*args, **kwargs):
         del args, kwargs

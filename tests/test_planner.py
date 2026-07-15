@@ -1,22 +1,24 @@
+from dataclasses import replace
+from typing import Any
+
 from tails_cloner.models import BlockDevice
 from tails_cloner.planner import OperationKind, OperationSource, plan_operation
 
 
-def device(**overrides):
-    base = {
-        "path": "/dev/sdb",
-        "size_bytes": 16_000_000_000,
-        "size_label": "14.9 GiB",
-        "model": "USB Drive",
-        "vendor": "SanDisk",
-        "transport": "usb",
-        "removable": True,
-    }
-    base.update(overrides)
-    return BlockDevice(**base)
+def device(**overrides: Any) -> BlockDevice:
+    base = BlockDevice(
+        path="/dev/sdb",
+        size_bytes=16_000_000_000,
+        size_label="14.9 GiB",
+        model="USB Drive",
+        vendor="SanDisk",
+        transport="usb",
+        removable=True,
+    )
+    return replace(base, **overrides)
 
 
-def source():
+def source() -> OperationSource:
     return OperationSource(type="image", path="/tmp/tails.img")
 
 

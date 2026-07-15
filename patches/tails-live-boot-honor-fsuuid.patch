@@ -1,0 +1,80 @@
+From 4fe7d580d801f855f380983606e4d7d477701a64 Mon Sep 17 00:00:00 2001
+From: C Badger <cbadger@example.invalid>
+Date: Wed, 15 Jul 2026 13:05:00 +0200
+Subject: [PATCH] live-boot: honor FSUUID when finding the live medium
+
+refs tails/tails#6397
+refs tails/tails#7475
+
+When the bootloader passes FSUUID=<uuid>, treat it as the authoritative
+identity of the filesystem that supplied the kernel and initramfs.
+
+Resolve the matching /dev/disk/by-uuid symlink and test only that block
+device. Do not fall back to live-media=removable or broad block-device
+scanning when FSUUID is present: selecting another Tails-like medium would
+mix boot components from different devices.
+
+Keeping live-media=removable on the command line remains useful for ISO/DVD
+boots where no FSUUID is available.
+---
+ components/9990-misc-helpers.sh | 38 ++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 38 insertions(+)
+
+diff --git a/components/9990-misc-helpers.sh b/components/9990-misc-helpers.sh
+index b6f9d96..631d5f4 100755
+--- a/lib/live/boot/9990-misc-helpers.sh
++++ b/lib/live/boot/9990-misc-helpers.sh
+@@ -2,6 +2,32 @@
+ 
+ #set -e
+ 
++fsuuid_live_media_device ()
++{
++	# FSUUID is supplied by the bootloader for the filesystem it actually
++	# booted from. Wait for udev to expose the corresponding block device;
++	# find_livefs is retried by its caller while devices settle.
++	if [ -z "${FSUUID:-}" ]
++	then
++		return 1
++	fi
++
++	if [ ! -b "/dev/disk/by-uuid/${FSUUID}" ]
++	then
++		log_warning_msg \
++			"FSUUID=${FSUUID} is set but /dev/disk/by-uuid/${FSUUID} is not available yet"
++		return 1
++	fi
++
++	readlink -f "/dev/disk/by-uuid/${FSUUID}"
++}
++
++check_fsuuid_live_media ()
++{
++	devname="$(fsuuid_live_media_device)" || return 1
++	check_dev "null" "${devname}" "skip_uuid_check"
++}
++
+ is_live_path()
+ {
+ 	DIRECTORY="${1}/${LIVE_MEDIA_PATH}"
+@@ -245,6 +271,18 @@ find_livefs ()
+ 		fi
+ 	fi
+ 
++	# FSUUID is authoritative when present. In particular, it overrides
++	# live-media=removable, preventing a fallback scan from selecting another
++	# Tails-like medium after the bootloader identified the boot filesystem.
++	if [ -n "${FSUUID:-}" ]
++	then
++		if check_fsuuid_live_media
++		then
++			return 0
++		fi
++		return 1
++	fi
++
+ 	# first look at the one specified in the command line
+ 	case "${LIVE_MEDIA}" in
+ 		removable-usb)
+-- 
+2.54.0
