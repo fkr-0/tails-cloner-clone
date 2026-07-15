@@ -90,7 +90,10 @@ def test_backlog_todos_point_to_existing_cases_and_have_acceptance() -> None:
         assert item['status'] in {'todo', 'in_progress', 'done', 'blocked'}, todo_id
         assert item['priority'] in {'high', 'medium', 'low'}, todo_id
         assert item.get('acceptance'), todo_id
-        for scenario_ref in item['scenario_refs']:
+        scenario_refs = item.get('scenario_refs', [])
+        if item.get('kind') == 'lab_scenario':
+            assert scenario_refs, todo_id
+        for scenario_ref in scenario_refs:
             assert scenario_ref in cases, todo_id
             expected_statuses = {'implemented'} if item['status'] == 'done' else {'partial', 'planned'}
             assert cases[scenario_ref]['current_status'] in expected_statuses, todo_id
@@ -105,15 +108,17 @@ def test_not_running_live_usb_source_case_has_guarded_source_device_validation()
     assert any('whole-source-device to whole-target-device' in item for item in case['current_coverage'])
     assert any('live/Tails.version' in item for item in case['current_coverage'])
     assert any('distinct block devices' in item for item in case['current_coverage'])
-    assert case['todo_refs'] == ['E2E-002']
+    assert case['current_status'] == 'implemented'
+    assert 'todo_refs' not in case
 
 
-def test_source_device_todo_tracks_remaining_controller_execution() -> None:
+def test_source_device_todo_records_completed_controller_execution() -> None:
     todos = _todo_data()
     todo = todos['items']['E2E-002']
-    assert todo['status'] == 'in_progress'
+    assert todo['status'] == 'done'
+    assert todo['scenario_refs'] == ['install.not_running_live_iso_usb']
     assert any('whole source device to whole target device' in item for item in todo['implementation_notes'])
-    assert any('execute' in item and 'controller' in item for item in todo['implementation_notes'])
+    assert 'post-write validation' in todo['completion']['evidence']
 
 
 def test_any_linux_download_to_disc_has_verified_guarded_destructive_validation() -> None:

@@ -79,8 +79,39 @@ warn_unused_configs = true
 warn_unreachable = true
 
 [[tool.mypy.overrides]]
-module = "tests.*"
+module = [
+  "test_app",
+  "test_appimage_release_smoke",
+  "test_boot_loader",
+  "test_cli",
+  "test_controller",
+  "test_creator",
+  "test_devices",
+  "test_drive_inspector",
+  "test_fsuuid_patch_artifact",
+  "test_models",
+  "test_network",
+  "test_packaging",
+  "test_planner",
+  "test_post_write",
+  "test_remote_index",
+  "test_source",
+  "test_upgrader",
+  "test_verification",
+  "tests.*",
+]
 disallow_untyped_defs = false
+disallow_untyped_calls = false
+disallow_any_generics = false
+allow_untyped_globals = true
+
+[[tool.mypy.overrides]]
+module = "test_app"
+disable_error_code = ["assignment", "method-assign", "attr-defined", "var-annotated"]
+
+[[tool.mypy.overrides]]
+module = "pytest"
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

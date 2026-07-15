@@ -27,7 +27,8 @@ def test_primary_upgrade_milestone_uses_real_upgrader() -> None:
     assert script.exists()
     text = script.read_text(encoding='utf-8')
     assert 'simulate-internal-upgrade-preserve-persistence' in text
-    assert 'from tails_cloner.upgrader import upgrade_tails_system_partition' in text
+    assert 'from tails_cloner.upgrader import (' in text
+    assert 'upgrade_tails_system_partition,' in text
     assert 'upgrade_tails_system_partition(image, target, progress_callback=print)' in text
     assert 'copy_boot_partition_from_image(' not in text
     assert 'image_boot_partition_source(' not in text

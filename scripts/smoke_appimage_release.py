@@ -66,8 +66,7 @@ def run(command: list[str], *, timeout: int = 60, cwd: Path | None = None) -> su
         command,
         cwd=str(cwd) if cwd else None,
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         timeout=timeout,
         check=False,
     )

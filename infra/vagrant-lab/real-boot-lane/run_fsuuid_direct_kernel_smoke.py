@@ -196,7 +196,6 @@ def main() -> int:
     parser.add_argument('--json', action='store_true', help='Print full JSON evidence.')
     args = parser.parse_args()
 
-    require_artifacts()
     if args.dry_run:
         result: dict[str, Any] = {
             'variant': 'fsuuid-two-valid-media-direct-kernel-smoke',
@@ -210,6 +209,7 @@ def main() -> int:
             'noautologin': args.noautologin,
         }
     else:
+        require_artifacts()
         result = run_smoke(
             timeout_seconds=args.timeout,
             memory_mb=args.memory_mb,

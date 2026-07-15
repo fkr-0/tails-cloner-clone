@@ -58,6 +58,7 @@ def test_cloner_patch_series_applies_to_current_upstream_devel(tmp_path: Path) -
             'tails-installer: expose admin password state',
             'tails-installer: gate internal target enumeration',
             'tails-installer: confirm internal storage targets',
+            'tails-installer: refuse source and running devices as targets',
         ]
     finally:
         run(['git', 'worktree', 'remove', '--force', str(worktree)], TAILS_TREE)
