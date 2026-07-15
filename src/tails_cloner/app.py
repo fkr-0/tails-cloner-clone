@@ -321,7 +321,7 @@ class TailsClonerApp(tk.Tk):
         self.boot_order_parse_button = ttk.Button(
             self.boot_order_tab,
             text="Parse from selected image/source",
-            command=lambda: self.controller.executor.submit(self._parse_boot_order_entries_task),
+            command=self._start_parse_boot_order_entries,
         )
         self.boot_order_parse_button.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         ttk.Label(
@@ -629,18 +629,21 @@ class TailsClonerApp(tk.Tk):
         self.boot_loader_entry_var.set("")
         self._sync_post_write_options()
 
-    def _parse_boot_order_entries_task(self) -> None:
+    def _start_parse_boot_order_entries(self) -> None:
         source_path = self.image_path_var.get().strip()
         if self.controller.state.source_mode == SourceMode.RUNNING:
             source_path = self.controller.state.running_tails_device
         if not source_path:
-            self.after(0, lambda: self.boot_loader_status_var.set("No image/source selected to parse."))
+            self.boot_loader_status_var.set("No image/source selected to parse.")
             return
+        self.controller.executor.submit(self._parse_boot_order_entries_task, source_path)
+
+    def _parse_boot_order_entries_task(self, source_path: str) -> None:
         entries = discover_boot_loader_entries(source_path)
         if not entries:
-            self.after(0, lambda: self.boot_loader_status_var.set("No boot-loader entries found in selected source."))
+            self._queue_ui(lambda: self.boot_loader_status_var.set("No boot-loader entries found in selected source."))
             return
-        self.after(0, lambda e=entries: self._apply_parsed_boot_order_entries(e))
+        self._queue_ui(lambda e=entries: self._apply_parsed_boot_order_entries(e))
 
     def _apply_parsed_boot_order_entries(self, entries: list[str]) -> None:
         self._set_boot_order_entries(entries)
@@ -682,7 +685,7 @@ class TailsClonerApp(tk.Tk):
 
         def worker() -> None:
             checksum = self._compute_file_sha256(image_path)
-            self.after(0, lambda: self._apply_local_checksum(job_id, checksum))
+            self._queue_ui(lambda: self._apply_local_checksum(job_id, checksum))
 
         self.controller.executor.submit(worker)
 
@@ -707,10 +710,9 @@ class TailsClonerApp(tk.Tk):
         except Exception:
             return ""
 
-    def _fetch_suggested_checksum(self) -> None:
-        url = self.controller.state.selected_checksum_url.strip()
+    def _fetch_suggested_checksum(self, url: str) -> None:
         if not url:
-            self.after(0, lambda: self.suggested_checksum_var.set(""))
+            self._queue_ui(lambda: self.suggested_checksum_var.set(""))
             return
         try:
             with urlopen(url, timeout=20) as response:  # noqa: S310 - remote metadata chosen by user context
@@ -719,7 +721,7 @@ class TailsClonerApp(tk.Tk):
             checksum = token if len(token) >= 32 else ""
         except Exception:
             checksum = ""
-        self.after(0, lambda c=checksum: self.suggested_checksum_var.set(c))
+        self._queue_ui(lambda c=checksum: self.suggested_checksum_var.set(c))
 
     def _add_readonly_row(self, parent: ttk.Frame, row: int, label: str, variable: tk.StringVar) -> None:
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="nw", pady=(0, 6), padx=(0, 8))
@@ -1082,7 +1084,8 @@ class TailsClonerApp(tk.Tk):
         self.selected_iso_url_var.set(self.controller.state.selected_iso_url)
         self.selected_image_url_var.set(self.controller.state.selected_image_url)
         self.selected_signature_url_var.set(self.controller.state.selected_signature_url)
-        self.controller.executor.submit(self._fetch_suggested_checksum)
+        checksum_url = self.controller.state.selected_checksum_url.strip()
+        self.controller.executor.submit(self._fetch_suggested_checksum, checksum_url)
 
     def _sync_loading_labels(self) -> None:
         version_label = "Refreshing remote versions…" if self.controller.state.versions_loading else "Remote versions idle"

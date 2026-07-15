@@ -1,5 +1,7 @@
 import tkinter as tk
 import unittest
+from queue import SimpleQueue
+from unittest import mock
 
 from tails_cloner.app import TailsClonerApp
 from tails_cloner.models import SourceMode
@@ -159,6 +161,31 @@ class AppWindowClassTests(unittest.TestCase):
         app._sync_loading_labels()
 
         self.assertEqual(app.device_status_label.kwargs["text"], "Existing Tails installation detected.")
+
+    def test_worker_ui_callbacks_run_only_when_main_loop_drains_queue(self) -> None:
+        app = TailsClonerApp.__new__(TailsClonerApp)
+        app._ui_events = SimpleQueue()
+        calls = []
+
+        app._queue_ui(lambda: calls.append("done"))
+
+        self.assertEqual(calls, [])
+        app._drain_ui_events()
+        self.assertEqual(calls, ["done"])
+
+    def test_close_is_blocked_while_destructive_write_is_running(self) -> None:
+        app = TailsClonerApp.__new__(TailsClonerApp)
+        app._write_in_progress = True
+        controller = mock.Mock()
+        app.controller = controller
+        app.destroy = mock.Mock()
+
+        with mock.patch("tails_cloner.app.messagebox.showwarning") as showwarning:
+            app._on_close()
+
+        showwarning.assert_called_once()
+        controller.shutdown.assert_not_called()
+        app.destroy.assert_not_called()
 
     def test_upgrade_plan_names_attached_live_source(self) -> None:
         app = TailsClonerApp.__new__(TailsClonerApp)
