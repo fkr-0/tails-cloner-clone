@@ -29,6 +29,37 @@ def test_install_plan_allows_plain_selectable_target() -> None:
     assert plan.warnings == []
 
 
+def test_install_plan_requires_a_selected_local_image() -> None:
+    plan = plan_operation(OperationKind.INSTALL, OperationSource(type="image"), device())
+
+    assert plan.would_write is False
+    assert plan.blocking_errors == ["Choose a local ISO or IMG file before starting a write operation."]
+
+
+def test_remote_source_must_be_downloaded_before_write() -> None:
+    plan = plan_operation(
+        OperationKind.INSTALL,
+        OperationSource(type="remote_image", path="https://example.invalid/tails.img"),
+        device(),
+    )
+
+    assert plan.would_write is False
+    assert plan.blocking_errors == ["Download the selected remote IMG before starting a write operation."]
+
+
+def test_attached_source_only_supports_upgrade() -> None:
+    attached = OperationSource(type="attached_source", device="/dev/sdc", version="7.7.2")
+
+    install_plan = plan_operation(OperationKind.INSTALL, attached, device())
+    upgrade_plan = plan_operation(OperationKind.UPGRADE, attached, device(has_tails=True))
+
+    assert install_plan.would_write is False
+    assert install_plan.blocking_errors == [
+        "Attached live sources are only supported for persistence-preserving upgrades."
+    ]
+    assert upgrade_plan.would_write is True
+
+
 def test_install_plan_refuses_disabled_running_source_target() -> None:
     plan = plan_operation(
         OperationKind.INSTALL,

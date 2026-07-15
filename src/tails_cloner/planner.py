@@ -178,6 +178,18 @@ def plan_operation(operation: OperationKind, source: OperationSource, target: Bl
     warnings: list[str] = []
     errors: list[str] = []
 
+    if source.type == "remote_image":
+        errors.append("Download the selected remote IMG before starting a write operation.")
+    elif source.type == "image" and not source.path:
+        errors.append("Choose a local ISO or IMG file before starting a write operation.")
+    elif source.type == "running_source" and not source.device:
+        errors.append("The running Tails source device could not be determined.")
+    elif source.type == "attached_source":
+        if not source.device:
+            errors.append("Validate an attached Tails live source before starting an upgrade.")
+        if operation != OperationKind.UPGRADE:
+            errors.append("Attached live sources are only supported for persistence-preserving upgrades.")
+
     if target.disabled_reason:
         errors.append(target.disabled_reason)
     if target.read_only:

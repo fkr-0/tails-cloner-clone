@@ -1,19 +1,28 @@
 from __future__ import annotations
 
-import tkinter as tk
-import sys
-import webbrowser
-from datetime import datetime
 import hashlib
+import sys
+import tkinter as tk
+import webbrowser
+from collections.abc import Callable
+from contextlib import suppress
+from datetime import datetime
 from pathlib import Path
+from queue import Empty, SimpleQueue
 from tkinter import filedialog, messagebox, ttk
 from urllib.request import urlopen
 
 from tails_cloner.boot_loader import discover_boot_loader_entries
-from tails_cloner.config import BRANDING, FONT_SIZE_LARGE, FONT_SIZE_MEDIUM, MIN_WINDOW_SIZE, REFRESH_INTERVAL_MS, WINDOW_SIZE
+from tails_cloner.config import (
+    BRANDING,
+    FONT_SIZE_MEDIUM,
+    MIN_WINDOW_SIZE,
+    REFRESH_INTERVAL_MS,
+    WINDOW_SIZE,
+)
 from tails_cloner.controller import ApplicationController
-from tails_cloner.models import BlockDevice, SourceMode
-from tails_cloner.planner import OperationKind, OperationSource, plan_operation
+from tails_cloner.models import SourceMode
+from tails_cloner.planner import OperationKind
 
 
 class TailsClonerApp(tk.Tk):
@@ -67,6 +76,8 @@ class TailsClonerApp(tk.Tk):
         self.dark_mode_var = tk.BooleanVar(value=True)
         self._last_versions_refresh_at: str = "never"
         self._checksum_job_id = 0
+        self._ui_events: SimpleQueue[Callable[[], None]] = SimpleQueue()
+        self._write_in_progress = False
 
         self._set_window_icon()
         self._configure_theme()
@@ -81,10 +92,10 @@ class TailsClonerApp(tk.Tk):
         self.rowconfigure(1, weight=1)
 
         # Keyboard bindings
-        self.bind("<Control-r>", lambda e: self.controller.executor.submit(self.controller.refresh_versions))
-        self.bind("<Control-d>", lambda e: self.controller.executor.submit(self.controller.refresh_devices))
-        self.bind("<Control-q>", lambda e: self._on_close())
-        self.bind("<Escape>", lambda e: self._on_close())
+        self.bind("<Control-r>", lambda _event: self.controller.executor.submit(self.controller.refresh_versions))
+        self.bind("<Control-d>", lambda _event: self.controller.executor.submit(self.controller.refresh_devices))
+        self.bind("<Control-q>", lambda _event: self._on_close())
+        self.bind("<Escape>", lambda _event: self._on_close())
 
         header = ttk.Frame(self, padding=16)
         header.grid(row=0, column=0, sticky="ew")
@@ -144,7 +155,7 @@ class TailsClonerApp(tk.Tk):
         self.download_button = ttk.Button(
             self.source_remote_frame,
             text="Download selected IMG to local cache",
-            command=lambda: self.controller.executor.submit(self._download_selected_remote_image),
+            command=self._start_remote_download,
         )
         self.download_button.grid(row=1, column=0, sticky="w", padx=(20, 0), pady=(4, 0))
         ttk.Label(
@@ -374,7 +385,7 @@ class TailsClonerApp(tk.Tk):
         self.clone_button = ttk.Button(right, text="Install", command=self._confirm_and_clone)
         self.clone_button.grid(row=8, column=0, columnspan=3, sticky="ew", pady=(20, 0))
         # Make clone button the default (activated by Enter)
-        self.clone_button.bind("<Return>", lambda e: self._confirm_and_clone())
+        self.clone_button.bind("<Return>", lambda _event: self._confirm_and_clone())
         warning_text = self._install_warning_text()
         self.install_warning_label = ttk.Label(right, text=warning_text, wraplength=340, justify="left", foreground="#7a1f1f")
         self.install_warning_label.grid(row=9, column=0, columnspan=3, sticky="w", pady=(12, 0))
@@ -396,10 +407,8 @@ class TailsClonerApp(tk.Tk):
 
     def _apply_theme(self, dark_mode: bool) -> None:
         style = ttk.Style(self)
-        try:
+        with suppress(tk.TclError):
             style.theme_use("clam")
-        except tk.TclError:
-            pass
 
         if dark_mode:
             bg = "#1a1d21"
@@ -447,11 +456,9 @@ class TailsClonerApp(tk.Tk):
         self._apply_theme(self.dark_mode_var.get())
 
     def _set_window_class(self) -> None:
-        try:
+        # Some Tk builds may not expose wm class control consistently.
+        with suppress(tk.TclError):
             self.tk.call("wm", "class", self._w, "tails-cloner-clone")
-        except tk.TclError:
-            # Some Tk builds may not expose wm class control consistently.
-            pass
 
     def _set_header_icon(self) -> None:
         icon_path = self._asset_path("tails-cloner-clone-32.png")
@@ -475,7 +482,7 @@ class TailsClonerApp(tk.Tk):
 
     def _asset_path(self, name: str) -> Path:
         if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
-            return Path(getattr(sys, "_MEIPASS")) / "assets" / name
+            return Path(sys._MEIPASS) / "assets" / name
         return Path(__file__).resolve().parents[2] / "assets" / name
 
     def _set_window_icon(self) -> None:
@@ -556,10 +563,8 @@ class TailsClonerApp(tk.Tk):
             self.boot_order_parse_button,
         ]
         for widget in widgets:
-            try:
+            with suppress(tk.TclError):
                 widget.config(state=state)
-            except tk.TclError:
-                pass
         self._sync_post_write_options()
 
     def _boot_order_entries(self) -> list[str]:
@@ -664,6 +669,8 @@ class TailsClonerApp(tk.Tk):
         else:
             self.install_warning_label.config(text=self._install_warning_text(), foreground="#7a1f1f")
         self._sync_devices()
+        self._update_device_warnings_and_button()
+        self._sync_upgrade_plan()
 
     def _schedule_local_checksum_refresh(self) -> None:
         self._checksum_job_id += 1
@@ -773,37 +780,51 @@ class TailsClonerApp(tk.Tk):
             self.attached_source_status_var.set(f"Attached source validation failed: {error}")
             messagebox.showerror("Attached source validation failed", str(error))
 
-    def _download_selected_remote_image(self) -> None:
+    def _start_remote_download(self) -> None:
         img_url = self.controller.state.selected_image_url.strip()
         if not img_url:
             self.controller.state.status_message = "No remote IMG URL selected."
             return
 
+        filename = Path(img_url).name or f"tails-{self.controller.state.selected_version}.img"
+        self._show_remote_download_started(filename)
+        self.controller.executor.submit(self._download_selected_remote_image, img_url, filename)
+
+    def _download_selected_remote_image(self, img_url: str, filename: str) -> None:
         cache_dir = Path.home() / ".cache" / "tails-cloner-clone" / "downloads"
         cache_dir.mkdir(parents=True, exist_ok=True)
-        filename = Path(img_url).name or f"tails-{self.controller.state.selected_version}.img"
         target_path = cache_dir / filename
 
+        try:
+            with (
+                urlopen(img_url, timeout=60) as response,  # noqa: S310 - user-selected remote source
+                target_path.open("wb") as out,
+            ):
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    out.write(chunk)
+            self._queue_ui(lambda: self._apply_remote_download_success(target_path, filename))
+        except Exception as error:  # noqa: BLE001 - visible UI feedback
+            self._queue_ui(lambda message=str(error): self._apply_remote_download_failure(message))
+
+    def _show_remote_download_started(self, filename: str) -> None:
         self.source_status_var.set(f"Downloading {filename}…")
         self.controller.state.status_message = f"Downloading {filename}…"
-        try:
-            with urlopen(img_url, timeout=60) as response:  # noqa: S310 - user-selected remote source
-                with target_path.open("wb") as out:
-                    while True:
-                        chunk = response.read(1024 * 1024)
-                        if not chunk:
-                            break
-                        out.write(chunk)
-            self.image_path_var.set(str(target_path))
-            self.controller.set_source_mode(SourceMode.LOCAL)
-            self.source_mode_var.set("local")
-            self.remote_state_var.set("downloaded")
-            self.suggested_local_path_var.set(str(target_path))
-            self.source_status_var.set(f"Downloaded to {target_path}")
-            self.controller.state.status_message = f"Downloaded {filename}. Using local file source."
-        except Exception as error:  # noqa: BLE001 - visible UI feedback
-            self.source_status_var.set(f"Download failed: {error}")
-            self.controller.state.status_message = f"Download failed: {error}"
+
+    def _apply_remote_download_success(self, target_path: Path, filename: str) -> None:
+        self.image_path_var.set(str(target_path))
+        self.controller.set_source_mode(SourceMode.LOCAL)
+        self.source_mode_var.set("local")
+        self.remote_state_var.set("downloaded")
+        self.suggested_local_path_var.set(str(target_path))
+        self.source_status_var.set(f"Downloaded to {target_path}")
+        self.controller.state.status_message = f"Downloaded {filename}. Using local file source."
+
+    def _apply_remote_download_failure(self, message: str) -> None:
+        self.source_status_var.set(f"Download failed: {message}")
+        self.controller.state.status_message = f"Download failed: {message}"
 
     def _on_device_selected(self, _event=None) -> None:
         self._update_device_warnings_and_button()
@@ -842,11 +863,7 @@ class TailsClonerApp(tk.Tk):
             return
 
         operation = OperationKind.UPGRADE if self._upgrade_mode_enabled() else OperationKind.INSTALL
-        plan = plan_operation(
-            operation=operation,
-            source=self._current_operation_source(),
-            target=device,
-        )
+        plan = self.controller.plan_target_operation(operation, device_path, image_path)
         if plan.blocking_errors:
             messagebox.showerror("Device cannot be selected", "\n".join(plan.blocking_errors))
             self._update_device_warnings_and_button()
@@ -856,6 +873,11 @@ class TailsClonerApp(tk.Tk):
         if not confirmed:
             return
         is_upgrade = plan.operation == OperationKind.UPGRADE
+        operation_label = "upgrade" if is_upgrade else "installation"
+        self._write_in_progress = True
+        self._show_clone_progress(True, operation_label=operation_label)
+        self.clone_button.config(state="disabled")
+        self.progress_bar.start(10)
         self.controller.executor.submit(self._run_write_operation, image_path, device_path, is_upgrade)
 
     def _run_write_operation(self, image_path: str | None, device_path: str, is_upgrade: bool) -> None:
@@ -867,34 +889,32 @@ class TailsClonerApp(tk.Tk):
             else f"Tails has been successfully installed to {device_path}."
         )
 
-        self.after(0, lambda: self._show_clone_progress(True, operation_label=operation_label))
-        self.after(0, lambda: self.clone_button.config(state="disabled"))
-        self.after(0, lambda: self.progress_bar.start(10))
-
         try:
             def on_progress(message: str) -> None:
-                self.after(0, lambda m=message: self.progress_label.config(text=m))
+                self._queue_ui(lambda m=message: self.progress_label.config(text=m))
 
             if is_upgrade:
                 self.controller.upgrade_selected_image(image_path, device_path, progress_callback=on_progress)
             else:
                 self.controller.clone_selected_image(image_path, device_path, progress_callback=on_progress)
 
-            self.after(0, lambda: self._show_clone_progress(False))
-            self.after(0, lambda: self.clone_button.config(state="normal"))
-            self.after(0, lambda: messagebox.showinfo(complete_title, complete_message))
+            self._queue_ui(lambda: self._finish_write_success(complete_title, complete_message))
         except Exception as error:  # noqa: BLE001 - converted into visible UI feedback
-            self.after(0, lambda: self._show_clone_progress(False))
-            self.after(0, lambda: self.clone_button.config(state="normal"))
             error_message = str(error)
             self.controller.state.status_message = f"{operation_label.title()} failed: {error_message}"
-            self.after(
-                0,
-                lambda message=error_message: messagebox.showerror(
-                    f"{operation_label.title()} failed",
-                    message,
-                ),
-            )
+            self._queue_ui(lambda message=error_message: self._finish_write_failure(operation_label, message))
+
+    def _finish_write_success(self, title: str, message: str) -> None:
+        self._write_in_progress = False
+        self._show_clone_progress(False)
+        self.clone_button.config(state="normal")
+        messagebox.showinfo(title, message)
+
+    def _finish_write_failure(self, operation_label: str, message: str) -> None:
+        self._write_in_progress = False
+        self._show_clone_progress(False)
+        self.clone_button.config(state="normal")
+        messagebox.showerror(f"{operation_label.title()} failed", message)
 
     def _show_clone_progress(self, show: bool, operation_label: str = "operation") -> None:
         if show:
@@ -905,7 +925,19 @@ class TailsClonerApp(tk.Tk):
             self.progress_frame.grid_remove()
             self.progress_label.config(text="")
 
+    def _queue_ui(self, callback: Callable[[], None]) -> None:
+        self._ui_events.put(callback)
+
+    def _drain_ui_events(self) -> None:
+        while True:
+            try:
+                callback = self._ui_events.get_nowait()
+            except Empty:
+                return
+            callback()
+
     def _sync_state(self) -> None:
+        self._drain_ui_events()
         self.status_var.set(self.controller.state.status_message)
         self._sync_source_mode()
         self._sync_source_details()
@@ -924,14 +956,15 @@ class TailsClonerApp(tk.Tk):
         self.running_tails_version_var.set(self.controller.state.running_tails_version or "Not available")
         self.running_tails_device_var.set(self.controller.state.running_tails_device or "Unknown device")
 
-        # Sync source mode radio button
+        # Keep the running-source option available whenever startup detection
+        # found a running Tails system, even after the user temporarily selects
+        # another source mode.
         current_mode = self.controller.state.source_mode
         if current_mode == SourceMode.RUNNING:
             self.source_mode_var.set("running")
-            # Show running Tails frame, enable radio button
-            self.source_running_radio.state(["!disabled"])
-        else:
-            self.source_running_radio.state(["disabled"])
+        self.source_running_radio.state(
+            ["!disabled"] if self.controller.state.running_tails_available else ["disabled"]
+        )
         if current_mode == SourceMode.ATTACHED:
             self.source_mode_var.set("attached")
         elif current_mode == SourceMode.LOCAL:
@@ -989,41 +1022,24 @@ class TailsClonerApp(tk.Tk):
             devices = [d for d in devices if d.has_tails or d.disabled_reason]
         labels = {device.pretty_name: device.path for device in devices}
         snapshot = tuple(labels)
-        if snapshot == self._last_devices_snapshot:
-            return
-        self._last_devices_snapshot = snapshot
-        self._device_labels = labels
-        values = list(labels)
+        if snapshot != self._last_devices_snapshot:
+            self._last_devices_snapshot = snapshot
+            self._device_labels = labels
+            values = list(labels)
 
-        # Keep current selection if it still exists
-        current_selection = self.device_var.get()
-        self.device_combo["values"] = values
-        if values and current_selection not in labels:
-            self.device_var.set(values[0])
+            # Keep current selection if it still exists
+            current_selection = self.device_var.get()
+            self.device_combo["values"] = values
+            if values and current_selection not in labels:
+                self.device_var.set(values[0])
+            elif not values:
+                self.device_var.set("")
+        else:
+            # Device labels can remain stable while operation/source semantics
+            # change, so keep the path map current and always recompute the plan.
+            self._device_labels = labels
 
-        # Update warnings and button text
         self._update_device_warnings_and_button()
-
-    def _current_operation_source(self) -> OperationSource:
-        if self.controller.state.source_mode == SourceMode.RUNNING:
-            return OperationSource(
-                type="running_source",
-                device=self.controller.state.running_tails_device,
-                version=self.controller.state.running_tails_version,
-            )
-        if self.controller.state.source_mode == SourceMode.ATTACHED:
-            return OperationSource(
-                type="attached_source",
-                device=self.controller.state.attached_live_source_device,
-                version=self.controller.state.attached_live_source_version,
-            )
-        if self.controller.state.source_mode == SourceMode.REMOTE:
-            return OperationSource(
-                type="remote_image",
-                version=self.controller.state.selected_version,
-                path=self.controller.state.selected_image_url,
-            )
-        return OperationSource(type="image", path=self.image_path_var.get().strip())
 
     def _update_device_warnings_and_button(self) -> None:
         """Update device warnings and clone button text based on selected device."""
@@ -1046,11 +1062,10 @@ class TailsClonerApp(tk.Tk):
             return
 
         operation = OperationKind.UPGRADE if self._upgrade_mode_enabled() else OperationKind.INSTALL
-        plan = plan_operation(
-            operation=operation,
-            source=self._current_operation_source(),
-            target=device,
-        )
+        image_path = None
+        if self.controller.state.source_mode not in {SourceMode.RUNNING, SourceMode.ATTACHED}:
+            image_path = self.image_path_var.get().strip() or None
+        plan = self.controller.plan_target_operation(operation, device.path, image_path)
 
         messages = plan.blocking_errors + plan.warnings
         self.device_warning_label.config(text="\n".join(messages))
@@ -1071,9 +1086,11 @@ class TailsClonerApp(tk.Tk):
 
     def _sync_loading_labels(self) -> None:
         version_label = "Refreshing remote versions…" if self.controller.state.versions_loading else "Remote versions idle"
-        device_label = "Scanning devices…" if self.controller.state.devices_loading else "Device scan idle"
         self.version_status_label.config(text=version_label)
-        self.device_status_label.config(text=device_label)
+        if self.controller.state.devices_loading:
+            self.device_status_label.config(text="Scanning devices…", foreground="#666666")
+        elif not self.controller.state.devices:
+            self.device_status_label.config(text="No devices detected.", foreground="#666666")
 
     def _sync_upgrade_plan(self) -> None:
         selected_name = self.device_var.get().strip()
@@ -1082,6 +1099,10 @@ class TailsClonerApp(tk.Tk):
         if self.controller.state.source_mode == SourceMode.RUNNING:
             running_version = self.controller.state.running_tails_version or "unknown"
             source_desc = f"running Tails {running_version} (live medium)"
+        elif self.controller.state.source_mode == SourceMode.ATTACHED:
+            attached_version = self.controller.state.attached_live_source_version or "unknown"
+            attached_device = self.controller.state.attached_live_source_device or "not selected"
+            source_desc = f"attached Tails {attached_version} from {attached_device}"
         elif self.controller.state.source_mode == SourceMode.REMOTE:
             source_desc = f"remote {self.controller.state.selected_version or 'version'} (download required)"
         else:
@@ -1099,5 +1120,11 @@ class TailsClonerApp(tk.Tk):
         self.upgrade_plan_var.set(f"Source: {source_desc}\nTarget: {target_device}\nAction: {action_desc}")
 
     def _on_close(self) -> None:
+        if self._write_in_progress:
+            messagebox.showwarning(
+                "Write in progress",
+                "A Tails write operation is still running. Keep this window open until it completes.",
+            )
+            return
         self.controller.shutdown()
         self.destroy()
