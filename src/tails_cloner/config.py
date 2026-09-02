@@ -7,7 +7,7 @@ DEFAULT_TAILS_LATEST_RELEASE_URL = "https://tails.net/install/v2/Tails/amd64/sta
 DEFAULT_TAILS_TAGS_API_URL = "https://gitlab.tails.boum.org/api/v4/projects/tails%2Ftails/repository/tags?per_page=100"
 WINDOW_TITLE = "Tails Cloner Clone"
 WINDOW_SIZE = "1100x700"
-MIN_WINDOW_SIZE = (1000, 640)
+MIN_WINDOW_SIZE = (1000, 480)
 REFRESH_INTERVAL_MS = 200
 VERSIONS_REFRESH_TIMEOUT_SECONDS = 15
 

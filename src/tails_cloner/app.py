@@ -13,6 +13,7 @@ from pathlib import Path
 from queue import Empty, SimpleQueue
 from tempfile import NamedTemporaryFile
 from tkinter import filedialog, messagebox, ttk
+from typing import Literal
 from urllib.parse import urlparse
 from urllib.request import urlopen
 
@@ -91,14 +92,92 @@ class TailsClonerApp(tk.Tk):
         self._write_in_progress = False
         self._download_in_progress = False
         self._write_control_states: list[tuple[tk.Widget, str]] = []
+        self._scroll_regions: list[tuple[tk.Canvas, ttk.Frame]] = []
 
         self._set_window_icon()
         self._configure_theme()
         self._build_ui()
+        # Re-apply native-widget colors now that Canvas/Text widgets exist.
+        self._configure_theme()
         self.image_path_var.trace_add("write", lambda *_: self._schedule_local_checksum_refresh())
         self.controller.startup()
         self.after(REFRESH_INTERVAL_MS, self._sync_state)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _add_scrollable_tab(self, notebook: ttk.Notebook, text: str) -> tuple[ttk.Frame, tk.Canvas]:
+        shell = ttk.Frame(notebook)
+        shell.columnconfigure(0, weight=1)
+        shell.rowconfigure(0, weight=1)
+
+        canvas = tk.Canvas(shell, borderwidth=0, highlightthickness=0, takefocus=0)
+        scrollbar = ttk.Scrollbar(shell, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        scrollbar.grid(row=0, column=1, sticky="ns")
+
+        content = ttk.Frame(canvas, padding=8)
+        content_window = canvas.create_window((0, 0), window=content, anchor="nw")
+        content.bind("<Configure>", lambda _event: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda event: canvas.itemconfigure(content_window, width=event.width))
+
+        notebook.add(shell, text=text)
+        self._scroll_regions.append((canvas, content))
+        return content, canvas
+
+    def _scroll_region_for_widget(self, widget: tk.Misc) -> tuple[tk.Canvas, ttk.Frame] | None:
+        widget_path = str(widget)
+        for canvas, content in self._scroll_regions:
+            content_path = str(content)
+            if widget_path == content_path or widget_path.startswith(f"{content_path}."):
+                return canvas, content
+        return None
+
+    def _on_content_mousewheel(self, event: tk.Event) -> str | None:
+        widget = event.widget
+        if not isinstance(widget, tk.Misc) or isinstance(widget, (tk.Listbox, tk.Text)):
+            return None
+        region = self._scroll_region_for_widget(widget)
+        if region is None:
+            return None
+
+        canvas, _content = region
+        if getattr(event, "num", None) == 4:
+            units = -1
+        elif getattr(event, "num", None) == 5:
+            units = 1
+        else:
+            delta = int(getattr(event, "delta", 0))
+            if delta == 0:
+                return None
+            units = -1 if delta > 0 else 1
+        canvas.yview_scroll(units, "units")
+        return "break"
+
+    def _on_content_focus(self, event: tk.Event) -> None:
+        widget = event.widget
+        region = self._scroll_region_for_widget(widget)
+        if region is None:
+            return
+        canvas, content = region
+        self.after_idle(partial(self._ensure_widget_visible, canvas, content, widget))
+
+    @staticmethod
+    def _ensure_widget_visible(canvas: tk.Canvas, content: ttk.Frame, widget: tk.Misc) -> None:
+        with suppress(tk.TclError):
+            canvas.update_idletasks()
+            content.update_idletasks()
+            viewport_height = max(canvas.winfo_height(), 1)
+            content_height = max(content.winfo_reqheight(), viewport_height)
+            view_top = canvas.yview()[0] * content_height
+            widget_top = view_top + widget.winfo_rooty() - canvas.winfo_rooty()
+            widget_bottom = widget_top + max(widget.winfo_height(), 1)
+            view_bottom = view_top + viewport_height
+
+            if widget_top < view_top:
+                canvas.yview_moveto(max(0.0, widget_top / content_height))
+            elif widget_bottom > view_bottom:
+                target = (widget_bottom - viewport_height) / content_height
+                canvas.yview_moveto(min(1.0, max(0.0, target)))
 
     def _build_ui(self) -> None:
         self.columnconfigure(0, weight=1)
@@ -109,6 +188,10 @@ class TailsClonerApp(tk.Tk):
         self.bind("<Control-d>", lambda _event: self._submit_background_if_idle(self.controller.refresh_devices))
         self.bind("<Control-q>", lambda _event: self._on_close())
         self.bind("<Escape>", lambda _event: self._on_close())
+        self.bind("<MouseWheel>", self._on_content_mousewheel, add="+")
+        self.bind("<Button-4>", self._on_content_mousewheel, add="+")
+        self.bind("<Button-5>", self._on_content_mousewheel, add="+")
+        self.bind("<FocusIn>", self._on_content_focus, add="+")
 
         header = ttk.Frame(self, padding=16)
         header.grid(row=0, column=0, sticky="ew")
@@ -119,13 +202,15 @@ class TailsClonerApp(tk.Tk):
         self.header_icon_label.grid(row=0, column=0, sticky="w", padx=(0, 8))
         self._set_header_icon()
         ttk.Label(title_frame, text="Tails Cloner Clone", font=("TkDefaultFont", 22, "bold")).grid(row=0, column=1, sticky="w")
+        info_row = ttk.Frame(header)
+        info_row.grid(row=1, column=0, columnspan=5, sticky="w", pady=(4, 0))
         ttk.Label(
-            header,
+            info_row,
             text="Inofficial(!) Tails download/install/update tool. Refer to",
             foreground="#555555",
-        ).grid(row=1, column=0, sticky="w", pady=(4, 0))
-        self.downloads_link_label = tk.Label(header, text="https://downloads.tails.net", cursor="hand2", fg="#4f8cff")
-        self.downloads_link_label.grid(row=1, column=0, sticky="w", padx=(370, 0), pady=(4, 0))
+        ).grid(row=0, column=0, sticky="w")
+        self.downloads_link_label = tk.Label(info_row, text="https://downloads.tails.net", cursor="hand2", fg="#4f8cff")
+        self.downloads_link_label.grid(row=0, column=1, sticky="w", padx=(4, 0))
         self.downloads_link_label.bind("<Button-1>", lambda _e: webbrowser.open_new_tab("https://downloads.tails.net"))
         self.downloads_link_label.bind("<Enter>", self._on_link_enter)
         self.downloads_link_label.bind("<Leave>", self._on_link_leave)
@@ -148,10 +233,9 @@ class TailsClonerApp(tk.Tk):
 
         notebook = ttk.Notebook(self)
         notebook.grid(row=1, column=0, sticky="nsew", padx=16, pady=(0, 8))
-        tab_source = ttk.Frame(notebook, padding=8)
-        tab_write = ttk.Frame(notebook, padding=8)
-        notebook.add(tab_source, text="Source")
-        notebook.add(tab_write, text="Write")
+        tab_source, self.source_scroll_canvas = self._add_scrollable_tab(notebook, "Source")
+        tab_write, self.write_scroll_canvas = self._add_scrollable_tab(notebook, "Write")
+        self.write_scroll_content = tab_write
         tab_source.columnconfigure(0, weight=1)
         tab_source.columnconfigure(1, weight=1)
         tab_source.rowconfigure(1, weight=1)
@@ -402,10 +486,32 @@ class TailsClonerApp(tk.Tk):
         # Progress bar for clone operation
         self.progress_frame = ttk.Frame(right)
         self.progress_frame.grid(row=7, column=0, columnspan=3, sticky="ew", pady=(12, 0))
+        self.progress_frame.columnconfigure(0, weight=1)
         self.progress_bar = ttk.Progressbar(self.progress_frame, mode="indeterminate")
         self.progress_bar.grid(row=0, column=0, sticky="ew")
-        self.progress_label = ttk.Label(self.progress_frame, text="", foreground="#666666")
+        self.progress_label = ttk.Label(self.progress_frame, text="", foreground="#666666", wraplength=700)
         self.progress_label.grid(row=1, column=0, sticky="w", pady=(4, 0))
+        progress_log_frame = ttk.Frame(self.progress_frame)
+        progress_log_frame.grid(row=2, column=0, sticky="nsew", pady=(6, 0))
+        progress_log_frame.columnconfigure(0, weight=1)
+        progress_log_frame.rowconfigure(0, weight=1)
+        self.progress_log = tk.Text(
+            progress_log_frame,
+            height=7,
+            wrap="word",
+            state="disabled",
+            takefocus=1,
+            borderwidth=1,
+            relief="sunken",
+        )
+        self.progress_log.grid(row=0, column=0, sticky="nsew")
+        self.progress_log_scrollbar = ttk.Scrollbar(progress_log_frame, orient="vertical", command=self.progress_log.yview)
+        self.progress_log_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.progress_log.configure(yscrollcommand=self.progress_log_scrollbar.set)
+        self.progress_log.bind("<Prior>", lambda _event: self._scroll_progress_log(-1, "pages"))
+        self.progress_log.bind("<Next>", lambda _event: self._scroll_progress_log(1, "pages"))
+        self.progress_log.bind("<Home>", lambda _event: self._scroll_progress_log_to(0.0))
+        self.progress_log.bind("<End>", lambda _event: self._scroll_progress_log_to(1.0))
         self.progress_frame.grid_remove()  # Hidden by default
 
         self.clone_button = ttk.Button(right, text="Install", command=self._confirm_and_clone)
@@ -503,6 +609,16 @@ class TailsClonerApp(tk.Tk):
             self.theme_button.config(text="☀" if dark_mode else "🌙")
         if hasattr(self, "downloads_link_label"):
             self.downloads_link_label.configure(bg=bg, fg="#7db0ff" if dark_mode else "#2f6db5")
+        for canvas, _content in getattr(self, "_scroll_regions", []):
+            canvas.configure(bg=bg)
+        if hasattr(self, "progress_log"):
+            self.progress_log.configure(
+                bg=listbox_bg,
+                fg=fg,
+                insertbackground=fg,
+                selectbackground=select_bg,
+                selectforeground="#ffffff",
+            )
 
     def _on_toggle_dark_mode(self) -> None:
         self.dark_mode_var.set(not self.dark_mode_var.get())
@@ -1221,11 +1337,33 @@ class TailsClonerApp(tk.Tk):
 
     def _set_progress_text(self, message: str) -> None:
         self.progress_label.configure(text=message)
+        should_follow = self._progress_view_is_at_bottom(self.progress_log.yview())
+        self.progress_log.configure(state="normal")
+        try:
+            if self.progress_log.index("end-1c") != "1.0":
+                self.progress_log.insert("end", "\n")
+            self.progress_log.insert("end", message)
+        finally:
+            self.progress_log.configure(state="disabled")
+        if should_follow:
+            self.progress_log.see("end")
+
+    @staticmethod
+    def _progress_view_is_at_bottom(view: tuple[float, float]) -> bool:
+        return len(view) < 2 or view[1] >= 0.98
+
+    def _scroll_progress_log(self, amount: int, what: Literal["units", "pages"]) -> str:
+        self.progress_log.yview_scroll(amount, what)
+        return "break"
+
+    def _scroll_progress_log_to(self, fraction: float) -> str:
+        self.progress_log.yview_moveto(fraction)
+        return "break"
 
     def _finish_write_success(self, title: str, message: str) -> None:
         self._write_in_progress = False
         self._set_write_controls_locked(False)
-        self._show_clone_progress(False)
+        self._finish_clone_progress(message)
         self._sync_source_mode()
         self._sync_experimental_state()
         self._update_device_warnings_and_button()
@@ -1234,16 +1372,31 @@ class TailsClonerApp(tk.Tk):
     def _finish_write_failure(self, operation_label: str, message: str) -> None:
         self._write_in_progress = False
         self._set_write_controls_locked(False)
-        self._show_clone_progress(False)
+        self._finish_clone_progress(f"{operation_label.title()} failed: {message}")
         self._sync_source_mode()
         self._sync_experimental_state()
         self._update_device_warnings_and_button()
         messagebox.showerror(f"{operation_label.title()} failed", message)
 
+    def _finish_clone_progress(self, message: str) -> None:
+        self.progress_bar.stop()
+        self._set_progress_text(message)
+
     def _show_clone_progress(self, show: bool, operation_label: str = "operation") -> None:
         if show:
+            self.progress_log.configure(state="normal")
+            self.progress_log.delete("1.0", "end")
+            self.progress_log.configure(state="disabled")
             self.progress_frame.grid()
-            self.progress_label.config(text=f"Starting {operation_label}...")
+            self._set_progress_text(f"Starting {operation_label}...")
+            self.after_idle(
+                partial(
+                    self._ensure_widget_visible,
+                    self.write_scroll_canvas,
+                    self.write_scroll_content,
+                    self.progress_frame,
+                )
+            )
         else:
             self.progress_bar.stop()
             self.progress_frame.grid_remove()

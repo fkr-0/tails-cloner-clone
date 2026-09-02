@@ -1,4 +1,5 @@
 import hashlib
+import inspect
 import tkinter as tk
 import unittest
 from io import BytesIO
@@ -9,6 +10,7 @@ from typing import cast
 from unittest import mock
 
 from tails_cloner.app import TailsClonerApp
+from tails_cloner.config import MIN_WINDOW_SIZE
 from tails_cloner.models import SourceMode
 
 
@@ -56,6 +58,39 @@ class _FakeLabel:
     def config(self, **kwargs) -> None:
         self.kwargs.update(kwargs)
 
+    configure = config
+
+
+class _FakeProgressLog:
+    def __init__(self, view: tuple[float, float]) -> None:
+        self.view = view
+        self.content = ""
+        self.state = "disabled"
+        self.seen: list[str] = []
+
+    def yview(self) -> tuple[float, float]:
+        return self.view
+
+    def configure(self, **kwargs: str) -> None:
+        self.state = kwargs.get("state", self.state)
+
+    def index(self, _index: str) -> str:
+        return "1.0" if not self.content else "1.1"
+
+    def insert(self, _index: str, text: str) -> None:
+        self.content += text
+
+    def see(self, index: str) -> None:
+        self.seen.append(index)
+
+
+class _FakeProgressBar:
+    def __init__(self) -> None:
+        self.stop_calls = 0
+
+    def stop(self) -> None:
+        self.stop_calls += 1
+
 
 class _FakeWidget:
     def __init__(self) -> None:
@@ -84,6 +119,56 @@ class _FakeButton(_FakeLabel):
 
 
 class AppWindowClassTests(unittest.TestCase):
+    def test_minimum_window_height_allows_constrained_desktop_viewports(self) -> None:
+        self.assertEqual(MIN_WINDOW_SIZE, (1000, 480))
+
+    def test_notebook_tabs_use_scrollable_content_shells(self) -> None:
+        build_source = inspect.getsource(TailsClonerApp._build_ui)
+
+        self.assertIn('self._add_scrollable_tab(notebook, "Source")', build_source)
+        self.assertIn('self._add_scrollable_tab(notebook, "Write")', build_source)
+
+    def test_header_download_link_does_not_use_fixed_pixel_alignment(self) -> None:
+        build_source = inspect.getsource(TailsClonerApp._build_ui)
+
+        self.assertIn("info_row = ttk.Frame(header)", build_source)
+        self.assertNotIn("padx=(370, 0)", build_source)
+
+    def test_progress_log_autofollows_while_user_is_at_bottom(self) -> None:
+        app = TailsClonerApp.__new__(TailsClonerApp)
+        app.progress_label = _FakeLabel()
+        app.progress_log = _FakeProgressLog((0.25, 1.0))
+
+        app._set_progress_text("writing partition table")
+
+        self.assertEqual(app.progress_label.kwargs["text"], "writing partition table")
+        self.assertEqual(app.progress_log.content, "writing partition table")
+        self.assertEqual(app.progress_log.seen, ["end"])
+        self.assertEqual(app.progress_log.state, "disabled")
+
+    def test_progress_log_does_not_fight_user_scrolling_back(self) -> None:
+        app = TailsClonerApp.__new__(TailsClonerApp)
+        app.progress_label = _FakeLabel()
+        app.progress_log = _FakeProgressLog((0.0, 0.6))
+
+        app._set_progress_text("syncing target")
+
+        self.assertEqual(app.progress_log.content, "syncing target")
+        self.assertEqual(app.progress_log.seen, [])
+
+    def test_completed_progress_retains_history_for_review(self) -> None:
+        app = TailsClonerApp.__new__(TailsClonerApp)
+        app.progress_label = _FakeLabel()
+        app.progress_log = _FakeProgressLog((0.0, 1.0))
+        app.progress_bar = _FakeProgressBar()
+        app._set_progress_text("writing system partition")
+
+        app._finish_clone_progress("Installation complete")
+
+        self.assertEqual(app.progress_bar.stop_calls, 1)
+        self.assertEqual(app.progress_log.content, "writing system partition\nInstallation complete")
+        self.assertEqual(app.progress_label.kwargs["text"], "Installation complete")
+
     def test_set_window_class_uses_tcl_wm_class(self) -> None:
         app = TailsClonerApp.__new__(TailsClonerApp)
         app.tk = _FakeTk()
