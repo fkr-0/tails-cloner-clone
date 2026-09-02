@@ -45,7 +45,9 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=False,
+    # On Linux this preserves stdout/stderr for first-class CLI use while the
+    # desktop launcher still remains Terminal=false and opens only the GUI.
+    console=True,
 )
 coll = COLLECT(
     exe,

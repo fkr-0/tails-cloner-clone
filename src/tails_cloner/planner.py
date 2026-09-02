@@ -116,6 +116,18 @@ class OperationPlan:
         return "All data on the selected device will be lost."
 
     @property
+    def destructive_scope(self) -> str:
+        if self.operation == OperationKind.UPGRADE:
+            return "tails_system_partition_only"
+        return "whole_device"
+
+    @property
+    def persistence_behavior(self) -> str:
+        if self.operation == OperationKind.UPGRADE:
+            return "preserved_if_present"
+        return "destroyed_if_present"
+
+    @property
     def confirmation_message(self) -> str:
         if self.operation == OperationKind.UPGRADE:
             action = "Upgrade while preserving existing Persistent Storage if present"
@@ -161,6 +173,9 @@ class OperationPlan:
             "source_label": self.source_label,
             "target_label": self.target_label,
             "data_impact_summary": self.data_impact_summary,
+            "destructive_scope": self.destructive_scope,
+            "persistence_behavior": self.persistence_behavior,
+            "confirmation_token": target_confirmation_token(self.target),
             "confirmation_title": self.confirmation_title,
             "confirmation_message": self.confirmation_message,
         }
@@ -195,7 +210,23 @@ def _device_to_dict(device: BlockDevice) -> dict[str, Any]:
         "disabled_reason": device.disabled_reason,
         "status_label": device.status_label,
         "pretty_name": device.pretty_name,
+        "confirmation_token": target_confirmation_token(device),
     }
+
+
+def target_confirmation_token(device: BlockDevice) -> str:
+    """Return an explicit stable identity token suitable for noninteractive writes.
+
+    Empty means the device has no sufficiently stable identity and therefore
+    cannot be acknowledged safely by the noninteractive CLI.
+    """
+    if device.wwn.strip():
+        return f"wwn:{device.wwn.strip().casefold()}"
+    if device.serial.strip():
+        return f"serial:{device.serial.strip().casefold()}"
+    if device.stable_path.strip():
+        return f"by-id:{device.stable_path.strip()}"
+    return ""
 
 
 def plan_operation(operation: OperationKind, source: OperationSource, target: BlockDevice) -> OperationPlan:

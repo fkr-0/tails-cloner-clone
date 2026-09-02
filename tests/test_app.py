@@ -1,8 +1,9 @@
-import hashlib
 import inspect
+import json
 import tkinter as tk
 import unittest
-from io import BytesIO
+from collections.abc import Callable
+from io import BytesIO, StringIO
 from pathlib import Path
 from queue import SimpleQueue
 from tempfile import TemporaryDirectory
@@ -10,8 +11,15 @@ from typing import cast
 from unittest import mock
 
 from tails_cloner.app import TailsClonerApp
+from tails_cloner.cli_events import EventSink, OutputMode
 from tails_cloner.config import MIN_WINDOW_SIZE
-from tails_cloner.models import SourceMode
+from tails_cloner.download import DownloadProgress, DownloadVerificationError, VerifiedImageResult
+from tails_cloner.models import BlockDevice, SourceMode, VersionAssets
+from tails_cloner.planner import OperationKind, OperationSource, plan_operation
+
+
+def _jsonl_events(buffer: StringIO) -> list[dict[str, object]]:
+    return [json.loads(line) for line in buffer.getvalue().splitlines()]
 
 
 class _FakeResponse:
@@ -357,56 +365,93 @@ class AppWindowClassTests(unittest.TestCase):
         controller.shutdown.assert_not_called()
         app.destroy.assert_not_called()
 
-    def test_verified_remote_download_is_promoted_atomically(self) -> None:
+    def test_verified_remote_download_delegates_to_shared_service(self) -> None:
         app = TailsClonerApp.__new__(TailsClonerApp)
         app._ui_events = SimpleQueue()
-        image = b"verified Tails image"
-        digest = hashlib.sha256(image).hexdigest()
+        event_output = StringIO()
+        app._operator_events = EventSink(
+            command="gui",
+            output_mode=OutputMode.JSONL,
+            stdout=event_output,
+            stderr=StringIO(),
+        )
+        digest = "a" * 64
         successes: list[tuple[Path, str, str, str, str, str]] = []
         failures: list[str] = []
         app._apply_remote_download_success = lambda *args: successes.append(args)
         app._apply_remote_download_failure = failures.append
 
-        with (
-            TemporaryDirectory() as tmpdir,
-            mock.patch("tails_cloner.app.Path.home", return_value=Path(tmpdir)),
-            mock.patch("tails_cloner.app.should_use_torify", return_value=False),
-            mock.patch(
-                "tails_cloner.app.urlopen",
-                side_effect=[
-                    _FakeResponse(f"{digest}  tails.img\n".encode()),
-                    _FakeResponse(image),
-                    _FakeResponse(b"detached signature"),
-                ],
-            ),
-            mock.patch(
-                "tails_cloner.app.verify_openpgp_detached_signature",
-                return_value="0123456789ABCDEF0123456789ABCDEF01234567",
-            ) as verify_signature,
-        ):
-            app._download_selected_remote_image(
-                "https://example.invalid/tails.img",
-                "https://example.invalid/tails.img.sha256",
-                "https://example.invalid/tails.img.sig",
-                "tails.img",
-            )
-            app._drain_ui_events()
-
+        with TemporaryDirectory() as tmpdir:
             target = Path(tmpdir) / ".cache/tails-cloner-clone/downloads/tails.img"
-            self.assertEqual(target.read_bytes(), image)
-            self.assertEqual(list(target.parent.glob(".*.part")), [])
-            verify_signature.assert_called_once()
-            signature_path = verify_signature.call_args.args[1]
-            self.assertTrue(str(signature_path).endswith(".sig.part"))
+            result = VerifiedImageResult(
+                path=target,
+                version="7.7.2",
+                source_url="https://example.invalid/tails.img",
+                checksum_url="https://example.invalid/tails.img.sha256",
+                signature_url="https://example.invalid/tails.img.sig",
+                sha256=digest,
+                signing_fingerprint="0123456789ABCDEF0123456789ABCDEF01234567",
+                pinned_primary_fingerprint="A490D0F4D311A4153E2BB7CADBB802B258ACD84F",
+                reused_existing=False,
+            )
+            with (
+                mock.patch("tails_cloner.app.Path.home", return_value=Path(tmpdir)),
+                mock.patch("tails_cloner.app.VerifiedImageDownloader") as downloader_class,
+            ):
+                def fake_download(
+                    _request: object,
+                    progress_callback: Callable[[DownloadProgress], None] | None = None,
+                ) -> VerifiedImageResult:
+                    assert progress_callback is not None
+                    progress_callback(
+                        DownloadProgress(
+                            phase="download",
+                            message="Downloading Tails IMG",
+                            bytes_received=1024,
+                            bytes_total=2048,
+                        )
+                    )
+                    progress_callback(
+                        DownloadProgress(
+                            phase="verification",
+                            message="Verifying SHA-256 and OpenPGP",
+                        )
+                    )
+                    return result
+
+                downloader_class.return_value.download.side_effect = fake_download
+                app._download_selected_remote_image(
+                    result.source_url,
+                    result.checksum_url,
+                    result.signature_url,
+                    "tails.img",
+                    result.version,
+                )
+                app._drain_ui_events()
+                request = downloader_class.return_value.download.call_args.args[0]
+                self.assertEqual(request.destination, target)
+                self.assertEqual(request.version, "7.7.2")
 
         self.assertEqual(successes[0][1:3], ("tails.img", digest))
         self.assertEqual(successes[0][3], "0123456789ABCDEF0123456789ABCDEF01234567")
         self.assertEqual(successes[0][4], "https://example.invalid/tails.img")
         self.assertEqual(failures, [])
+        events = _jsonl_events(event_output)
+        self.assertIn("progress", [event["kind"] for event in events])
+        self.assertIn("verification", [event["kind"] for event in events])
+        completion = next(event for event in events if event["kind"] == "completion")
+        self.assertEqual(cast(dict[str, object], completion["result"])["activity"], "download")
 
     def test_failed_remote_verification_keeps_existing_cached_image(self) -> None:
         app = TailsClonerApp.__new__(TailsClonerApp)
         app._ui_events = SimpleQueue()
+        event_output = StringIO()
+        app._operator_events = EventSink(
+            command="gui",
+            output_mode=OutputMode.JSONL,
+            stdout=event_output,
+            stderr=StringIO(),
+        )
         failures: list[str] = []
         app._apply_remote_download_success = lambda *_args: self.fail("verification unexpectedly succeeded")
         app._apply_remote_download_failure = failures.append
@@ -417,15 +462,9 @@ class AppWindowClassTests(unittest.TestCase):
             target.write_bytes(b"previous verified image")
             with (
                 mock.patch("tails_cloner.app.Path.home", return_value=Path(tmpdir)),
-                mock.patch("tails_cloner.app.should_use_torify", return_value=False),
-                mock.patch(
-                    "tails_cloner.app.urlopen",
-                    side_effect=[
-                        _FakeResponse(f"{'0' * 64}  tails.img\n".encode()),
-                        _FakeResponse(b"corrupt replacement"),
-                    ],
-                ),
+                mock.patch("tails_cloner.app.VerifiedImageDownloader") as downloader_class,
             ):
+                downloader_class.return_value.download.side_effect = DownloadVerificationError("SHA-256 mismatch")
                 app._download_selected_remote_image(
                     "https://example.invalid/tails.img",
                     "https://example.invalid/tails.img.sha256",
@@ -439,6 +478,154 @@ class AppWindowClassTests(unittest.TestCase):
 
         self.assertEqual(len(failures), 1)
         self.assertIn("SHA-256 mismatch", failures[0])
+        failure = next(event for event in _jsonl_events(event_output) if event["kind"] == "failure")
+        error = cast(dict[str, object], failure["error"])
+        self.assertEqual(error["category"], "verification_failed")
+        self.assertEqual(error["exit_code"], 5)
+
+    def test_gui_write_emits_boundary_progress_and_completion(self) -> None:
+        app = TailsClonerApp.__new__(TailsClonerApp)
+        app._ui_events = SimpleQueue()
+        event_output = StringIO()
+        app._operator_events = EventSink(
+            command="gui",
+            output_mode=OutputMode.JSONL,
+            stdout=event_output,
+            stderr=StringIO(),
+        )
+        target = BlockDevice(
+            path="/dev/sdz",
+            stable_path="/dev/disk/by-id/usb-Test_Target",
+            size_bytes=64_000_000_000,
+            size_label="59.6 GiB",
+            model="Synthetic USB",
+            vendor="Test",
+            transport="usb",
+            removable=True,
+            serial="TARGET123",
+            is_big_enough_for_installation=True,
+        )
+        plan = plan_operation(
+            OperationKind.INSTALL,
+            OperationSource(type="image", path="/tmp/tails.img", size_bytes=1024),
+            target,
+        )
+        app._emit_write_boundary(plan)
+
+        class Controller:
+            state = type("State", (), {"status_message": ""})()
+
+            @staticmethod
+            def clone_selected_image(
+                _image_path: str | None,
+                _device_path: str,
+                progress_callback: Callable[[str], None] | None = None,
+            ) -> None:
+                assert progress_callback is not None
+                progress_callback("1048576 bytes copied")
+
+        app.controller = cast(object, Controller())
+        app._run_write_operation("/tmp/tails.img", "/dev/sdz", False)
+
+        events = _jsonl_events(event_output)
+        self.assertEqual(events[0]["kind"], "write_boundary")
+        self.assertIn("progress", [event["kind"] for event in events])
+        completion = next(event for event in events if event["kind"] == "completion")
+        result = cast(dict[str, object], completion["result"])
+        self.assertEqual(result["activity"], "write")
+        self.assertEqual(result["operation"], "install")
+
+    def test_gui_write_failure_emits_stable_failure_record(self) -> None:
+        app = TailsClonerApp.__new__(TailsClonerApp)
+        app._ui_events = SimpleQueue()
+        event_output = StringIO()
+        app._operator_events = EventSink(
+            command="gui",
+            output_mode=OutputMode.JSONL,
+            stdout=event_output,
+            stderr=StringIO(),
+        )
+
+        class Controller:
+            state = type("State", (), {"status_message": ""})()
+
+            @staticmethod
+            def clone_selected_image(
+                _image_path: str | None,
+                _device_path: str,
+                progress_callback: Callable[[str], None] | None = None,
+            ) -> None:
+                del progress_callback
+                raise RuntimeError("synthetic write failure")
+
+        app.controller = cast(object, Controller())
+        app._run_write_operation("/tmp/tails.img", "/dev/sdz", False)
+
+        failure = next(event for event in _jsonl_events(event_output) if event["kind"] == "failure")
+        error = cast(dict[str, object], failure["error"])
+        self.assertEqual(error["category"], "install_failed")
+        self.assertEqual(error["exit_code"], 7)
+
+    def test_gui_discovery_and_state_changes_emit_stable_records(self) -> None:
+        app = TailsClonerApp.__new__(TailsClonerApp)
+        event_output = StringIO()
+        app._operator_events = EventSink(
+            command="gui",
+            output_mode=OutputMode.JSONL,
+            stdout=event_output,
+            stderr=StringIO(),
+        )
+        app._last_versions_snapshot = ()
+        app.versions_list = mock.Mock()
+        version = VersionAssets(
+            version="7.7.2",
+            directory_url="https://example.invalid/7.7.2/",
+            iso_url="https://example.invalid/7.7.2/tails.iso",
+            img_url="https://example.invalid/7.7.2/tails.img",
+            sig_url="https://example.invalid/7.7.2/tails.img.sig",
+            sha256_url="https://example.invalid/7.7.2/tails.img.sha256",
+        )
+        state = type(
+            "State",
+            (),
+            {
+                "available_versions": [version],
+                "selected_version": "",
+                "status_message": "Scanning devices…",
+                "source_mode": SourceMode.LOCAL,
+                "versions_loading": False,
+                "devices_loading": True,
+            },
+        )()
+        app.controller = type("Controller", (), {"state": state})()
+        app._sync_versions()
+
+        app._last_status = ""
+        app.status_var = _FakeStringVar()
+        app._drain_ui_events = lambda: None
+        for method_name in (
+            "_sync_source_mode",
+            "_sync_source_details",
+            "_sync_tab2_source_summary",
+            "_sync_versions",
+            "_sync_remote_source_info",
+            "_sync_devices",
+            "_sync_selected_version_fields",
+            "_sync_loading_labels",
+            "_sync_upgrade_plan",
+            "_sync_download_lock",
+        ):
+            setattr(app, method_name, lambda: None)
+        app._write_in_progress = False
+        app.after = lambda *_args: None
+        app._sync_state()
+
+        events = _jsonl_events(event_output)
+        discovery = next(event for event in events if event["kind"] == "discovery")
+        self.assertEqual(discovery["resource"], "versions")
+        resolution = next(event for event in events if event["kind"] == "resolution")
+        self.assertEqual(resolution["resource"], "application_state")
+        self.assertEqual(resolution["status"], "Scanning devices…")
 
     def test_remote_download_rejects_plain_http_before_scheduling(self) -> None:
         app = TailsClonerApp.__new__(TailsClonerApp)
@@ -479,7 +666,7 @@ class AppWindowClassTests(unittest.TestCase):
         executor = mock.Mock()
         app.controller = type("Controller", (), {"state": state, "executor": executor})()
 
-        with mock.patch("tails_cloner.app.shutil.which", return_value=None):
+        with mock.patch("tails_cloner.app.gpg_available", return_value=False):
             app._start_remote_download()
 
         executor.submit.assert_not_called()
@@ -505,22 +692,6 @@ class AppWindowClassTests(unittest.TestCase):
 
         executor.submit.assert_not_called()
         self.assertIn("no detached OpenPGP signature", state.status_message)
-
-    def test_torified_image_download_enforces_https_protocols(self) -> None:
-        app = TailsClonerApp.__new__(TailsClonerApp)
-        with TemporaryDirectory() as tmpdir:
-            target = Path(tmpdir) / "tails.img.part"
-            with (
-                mock.patch("tails_cloner.app.should_use_torify", return_value=True),
-                mock.patch("tails_cloner.app.subprocess.run") as run,
-            ):
-                app._download_remote_image_to("https://example.invalid/tails.img", target)
-
-        command = run.call_args.args[0]
-        self.assertEqual(command[:3], ["torify", "curl", "-fL"])
-        self.assertIn("--proto", command)
-        self.assertIn("=https", command)
-        self.assertIn("--proto-redir", command)
 
     def test_upgrade_plan_names_attached_live_source(self) -> None:
         app = TailsClonerApp.__new__(TailsClonerApp)

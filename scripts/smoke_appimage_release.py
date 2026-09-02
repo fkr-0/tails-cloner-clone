@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -61,15 +62,150 @@ def parse_sha256_file(path: Path) -> tuple[str, str]:
     return parts[0], parts[1]
 
 
-def run(command: list[str], *, timeout: int = 60, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+def run(
+    command: list[str],
+    *,
+    timeout: int = 60,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         command,
         cwd=str(cwd) if cwd else None,
+        env=env,
         text=True,
         capture_output=True,
         timeout=timeout,
         check=False,
     )
+
+
+def run_appimage(appimage: Path, args: list[str], *, timeout: int = 60) -> subprocess.CompletedProcess[str]:
+    env = dict(os.environ)
+    # Avoid making CLI qualification depend on FUSE being enabled in the build
+    # host/container. The bytes still execute through the AppImage runtime.
+    env["APPIMAGE_EXTRACT_AND_RUN"] = "1"
+    return run([str(appimage), *args], timeout=timeout, env=env)
+
+
+def parse_cli_json(result: subprocess.CompletedProcess[str]) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def smoke_cli(appimage: Path, work_dir: Path) -> dict[str, Any]:
+    version_result = run_appimage(appimage, ["--version"], timeout=30)
+    nested_help_result = run_appimage(appimage, ["install", "--help"], timeout=30)
+    status_result = run_appimage(appimage, ["status", "--output", "json"], timeout=60)
+    devices_result = run_appimage(appimage, ["devices", "list", "--output", "json"], timeout=60)
+    status_payload = parse_cli_json(status_result)
+    devices_payload = parse_cli_json(devices_result)
+
+    planning: dict[str, Any] = {
+        "status": "skipped",
+        "reason": "device discovery did not yield a block device",
+    }
+    discovered_devices: list[dict[str, Any]] = []
+    if devices_payload is not None:
+        result_payload = devices_payload.get("result")
+        if isinstance(result_payload, dict):
+            candidate_devices = result_payload.get("devices")
+            if isinstance(candidate_devices, list):
+                discovered_devices = [item for item in candidate_devices if isinstance(item, dict)]
+
+    if discovered_devices:
+        target = str(discovered_devices[0].get("stable_path") or discovered_devices[0].get("path") or "")
+        if target:
+            image = work_dir / "cli-smoke-synthetic.img"
+            image.write_bytes(b"tails-cloner-clone AppImage planning smoke\n")
+            plan_result = run_appimage(
+                appimage,
+                [
+                    "plan",
+                    "install",
+                    "--image",
+                    str(image),
+                    "--target",
+                    target,
+                    "--output",
+                    "json",
+                ],
+                timeout=60,
+            )
+            plan_payload = parse_cli_json(plan_result)
+            plan_result_payload = plan_payload.get("result") if plan_payload is not None else None
+            plan_object = plan_result_payload.get("plan") if isinstance(plan_result_payload, dict) else None
+            planning = {
+                "status": "passed"
+                if plan_result.returncode in {0, 4} and isinstance(plan_object, dict)
+                else "failed",
+                "returncode": plan_result.returncode,
+                "target": target,
+                "schema": plan_payload.get("schema") if plan_payload else None,
+                "would_write": plan_object.get("would_write") if isinstance(plan_object, dict) else None,
+                "destructive_scope": plan_object.get("destructive_scope") if isinstance(plan_object, dict) else None,
+                "persistence_behavior": plan_object.get("persistence_behavior")
+                if isinstance(plan_object, dict)
+                else None,
+                "stdout": plan_result.stdout[-4000:],
+                "stderr": plan_result.stderr[-4000:],
+            }
+
+    status_valid = bool(
+        status_result.returncode == 0
+        and status_payload
+        and status_payload.get("schema") == "tails-cloner-cli/v1"
+        and status_payload.get("kind") == "completion"
+    )
+    devices_valid = bool(
+        devices_result.returncode == 0
+        and devices_payload
+        and devices_payload.get("schema") == "tails-cloner-cli/v1"
+        and devices_payload.get("kind") == "completion"
+    )
+    planning_valid = planning["status"] in {"passed", "skipped"}
+    passed = bool(
+        version_result.returncode == 0
+        and "tails-cloner-clone " in version_result.stdout
+        and nested_help_result.returncode == 0
+        and "--target-id" in nested_help_result.stdout
+        and status_valid
+        and devices_valid
+        and planning_valid
+    )
+    return {
+        "status": "passed" if passed else "failed",
+        "version": {
+            "returncode": version_result.returncode,
+            "stdout": version_result.stdout[-1000:],
+            "stderr": version_result.stderr[-1000:],
+        },
+        "nested_help": {
+            "returncode": nested_help_result.returncode,
+            "has_target_identity_option": "--target-id" in nested_help_result.stdout,
+            "stdout": nested_help_result.stdout[-4000:],
+            "stderr": nested_help_result.stderr[-4000:],
+        },
+        "status_command": {
+            "returncode": status_result.returncode,
+            "schema_valid": status_valid,
+            "stdout": status_result.stdout[-4000:],
+            "stderr": status_result.stderr[-4000:],
+        },
+        "devices_command": {
+            "returncode": devices_result.returncode,
+            "schema_valid": devices_valid,
+            "count": len(discovered_devices),
+            "stdout": devices_result.stdout[-4000:],
+            "stderr": devices_result.stderr[-4000:],
+        },
+        "planning_command": planning,
+    }
 
 
 def smoke_xvfb(appimage: Path, log_path: Path) -> dict[str, Any]:
@@ -87,12 +223,18 @@ def smoke_xvfb(appimage: Path, log_path: Path) -> dict[str, Any]:
 set -euo pipefail
 APP="$1"
 LOG="$2"
-"$APP" --remote-index-url file:///nonexistent >"$LOG" 2>&1 &
+APPIMAGE_EXTRACT_AND_RUN=1 "$APP" >"$LOG" 2>&1 &
 pid=$!
 trap 'kill "$pid" 2>/dev/null || true' EXIT
 for _ in $(seq 1 30); do
   if xdotool search --name "Tails Cloner Clone" >/tmp/tails-cloner-wids 2>/dev/null; then
     echo window-detected
+    if grep -q '"command":"gui"' "$LOG" && grep -q '"kind":"start"' "$LOG"; then
+      echo gui-start-event-detected
+    else
+      echo gui-start-event-missing
+      exit 1
+    fi
     kill "$pid" 2>/dev/null || true
     wait "$pid" || true
     exit 0
@@ -113,7 +255,11 @@ exit 1
         script_path.chmod(0o755)
         result = run([xvfb_run, "-a", str(script_path), str(appimage), str(log_path)], timeout=90)
     return {
-        "status": "passed" if result.returncode == 0 and "window-detected" in result.stdout else "failed",
+        "status": "passed"
+        if result.returncode == 0
+        and "window-detected" in result.stdout
+        and "gui-start-event-detected" in result.stdout
+        else "failed",
         "returncode": result.returncode,
         "stdout": result.stdout[-4000:],
         "stderr": result.stderr[-4000:],
@@ -137,7 +283,8 @@ def smoke_appimage(
     relative_checksum_filename = checksum_name == appimage.name
     checksum_matches = expected_hash == actual_hash
 
-    help_result = run([str(appimage), "--help"], timeout=30)
+    help_result = run_appimage(appimage, ["--help"], timeout=30)
+    cli = smoke_cli(appimage, work_dir)
     extract_dir = work_dir / "squashfs-root"
     if extract_dir.exists():
         shutil.rmtree(extract_dir)
@@ -150,6 +297,7 @@ def smoke_appimage(
         checksum_matches
         and relative_checksum_filename
         and help_result.returncode == 0
+        and cli["status"] == "passed"
         and extract_result.returncode == 0
         and gui["status"] in {"passed", "skipped"}
     )
@@ -170,6 +318,7 @@ def smoke_appimage(
             "stdout": help_result.stdout[-4000:],
             "stderr": help_result.stderr[-4000:],
         },
+        "cli": cli,
         "extract": {
             "returncode": extract_result.returncode,
             "extracted": extract_dir.exists(),
@@ -235,6 +384,8 @@ def print_summary(payload: dict[str, Any]) -> None:
     print(f"checksum_matches={payload['checksum']['matches']}")
     print(f"checksum_relative_filename={payload['checksum']['uses_relative_asset_filename']}")
     print(f"help_returncode={payload['help']['returncode']}")
+    print(f"cli_status={payload['cli']['status']}")
+    print(f"cli_planning_status={payload['cli']['planning_command']['status']}")
     print(f"extract_returncode={payload['extract']['returncode']}")
     print(f"gui_status={payload['gui']['status']}")
     print(f"evidence={payload['evidence']}")

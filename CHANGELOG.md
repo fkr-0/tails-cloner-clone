@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### First-class AppImage CLI
+
+- Expand the AppImage/`tails-cloner-clone` operator surface from read-only seeds into catalog/version inspection, verified downloads, current-system/status inspection, rich device inspection, install/upgrade planning, and destructive install/upgrade execution through the same controller/planner/creator/upgrader code paths as the GUI.
+- Require explicit noninteractive destructive acknowledgement with both `--yes` and the target's stable confirmation token; refuse CLI execution when the target lacks a stable WWN, serial, or by-id identity, while preserving immediate pre-write hardware revalidation and protected running/source-system refusal.
+- Reuse one shared verified-download service in GUI and CLI with HTTPS-only assets/redirects, Tor-aware transfer, bounded metadata, SHA-256 plus pinned OpenPGP verification, atomic promotion, and freshly verified reuse of already-present files.
+- Add running-Tails and attached-live-source CLI upgrades while preserving source/target anti-aliasing, read-only source semantics, partition-only upgrade writes, persistence preservation, post-write verification, and v0.5.4 loop lifecycle hardening.
+
+### Automation Contract and Qualification
+
+- Define the versioned `tails-cloner-cli/v1` JSON/JSONL event contract with stable discovery/resolution/verification/warning/progress/write-boundary/completion/failure kinds, deterministic final result objects, optional same-schema audit logs, and documented exit-code taxonomy.
+- Preserve no-argument GUI startup while forwarding explicit CLI arguments unchanged through the launcher/AppImage and retaining packaged signing-key resources.
+- Make the launcher boundary exact: only empty argv starts the GUI; every nonempty argv is dispatched unchanged to the CLI, so unknown and legacy GUI-looking options cannot enter a hidden second GUI parser.
+- Give the no-argument GUI the same stable schema-v1 JSONL observability on stdout, including startup, discovery/state changes, verified download progress/verification, write boundary, install/upgrade progress, completion, and failure events.
+- Add contract/regression tests for output, downloads, stable target acknowledgement, current-system refusal, catalog/local/running/attached source modes, fake-backed destructive install/upgrade paths, and built-AppImage CLI smoke coverage.
+
 ## v0.5.4 - 2026-09-02
 
 ### Upgrade and Device Safety

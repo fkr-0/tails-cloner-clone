@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import shutil
-import subprocess
 import sys
 import tkinter as tk
 import webbrowser
@@ -11,13 +9,13 @@ from datetime import datetime
 from functools import partial
 from pathlib import Path
 from queue import Empty, SimpleQueue
-from tempfile import NamedTemporaryFile
 from tkinter import filedialog, messagebox, ttk
 from typing import Literal
 from urllib.parse import urlparse
 from urllib.request import urlopen
 
 from tails_cloner.boot_loader import discover_boot_loader_entries
+from tails_cloner.cli_events import CliError, CommandResult, EventSink, ExitCode
 from tails_cloner.config import (
     BRANDING,
     FONT_SIZE_MEDIUM,
@@ -26,9 +24,17 @@ from tails_cloner.config import (
     WINDOW_SIZE,
 )
 from tails_cloner.controller import ApplicationController
+from tails_cloner.download import (
+    DownloadNetworkError,
+    DownloadProgress,
+    DownloadVerificationError,
+    RemoteImageRequest,
+    VerifiedImageDownloader,
+    gpg_available,
+    require_https_url,
+)
 from tails_cloner.models import SourceMode
-from tails_cloner.network import fetch_text_torified, should_use_torify
-from tails_cloner.planner import OperationKind
+from tails_cloner.planner import OperationKind, OperationPlan
 from tails_cloner.theme import (
     configure_canvas_widget,
     configure_combobox_popdown,
@@ -38,19 +44,20 @@ from tails_cloner.theme import (
     configure_ttk_style,
     palette_for,
 )
-from tails_cloner.verification import (
-    parse_sha256_text,
-    sha256_file,
-    verify_openpgp_detached_signature,
-    verify_sha256,
-)
+from tails_cloner.verification import sha256_file
 
 
 class TailsClonerApp(tk.Tk):
-    def __init__(self, controller: ApplicationController, remote_index_url: str) -> None:
+    def __init__(
+        self,
+        controller: ApplicationController,
+        remote_index_url: str,
+        event_sink: EventSink | None = None,
+    ) -> None:
         super().__init__()
         self.controller = controller
         self.remote_index_url = remote_index_url
+        self._operator_events = event_sink
         self._set_window_class()
         self.title(BRANDING.window_title)
         self.geometry(WINDOW_SIZE)
@@ -110,8 +117,86 @@ class TailsClonerApp(tk.Tk):
         self._configure_theme()
         self.image_path_var.trace_add("write", lambda *_: self._schedule_local_checksum_refresh())
         self.controller.startup()
+        self._emit_resolution(
+            resource="gui_state",
+            phase="startup_dispatched",
+            source_mode=self.controller.state.source_mode.value,
+        )
         self.after(REFRESH_INTERVAL_MS, self._sync_state)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _event_sink(self) -> EventSink | None:
+        return self.__dict__.get("_operator_events")
+
+    def _emit_resolution(self, **fields: object) -> None:
+        sink = self._event_sink()
+        if sink is not None:
+            sink.resolution(**fields)
+
+    def _emit_discovery(self, **fields: object) -> None:
+        sink = self._event_sink()
+        if sink is not None:
+            sink.discovery(**fields)
+
+    def _emit_progress(self, message: str, **fields: object) -> None:
+        sink = self._event_sink()
+        if sink is not None:
+            sink.progress(message, **fields)
+
+    def _emit_verification(self, message: str, **fields: object) -> None:
+        sink = self._event_sink()
+        if sink is not None:
+            sink.verification(message, **fields)
+
+    def _emit_completion(self, payload: dict[str, object]) -> None:
+        sink = self._event_sink()
+        if sink is not None:
+            sink.complete(CommandResult(payload=payload))
+
+    def _emit_failure(
+        self,
+        message: str,
+        *,
+        exit_code: ExitCode,
+        category: str,
+        details: dict[str, object] | None = None,
+    ) -> None:
+        sink = self._event_sink()
+        if sink is not None:
+            sink.fail(
+                CliError(
+                    message,
+                    exit_code=exit_code,
+                    category=category,
+                    details=details,
+                )
+            )
+
+    def _emit_write_boundary(self, plan: OperationPlan) -> None:
+        sink = self._event_sink()
+        if sink is not None:
+            sink.write_boundary(
+                "Operator confirmed destructive GUI operation; controller will revalidate identities before writing",
+                activity="write",
+                operation=plan.operation.value,
+                target=plan.target.stable_path or plan.target.path,
+                destructive_scope=plan.destructive_scope,
+                persistence_behavior=plan.persistence_behavior,
+            )
+
+    def _on_download_progress(self, progress: DownloadProgress) -> None:
+        fields: dict[str, object] = {
+            "activity": "download",
+            "phase": progress.phase,
+        }
+        if progress.bytes_received is not None:
+            fields["bytes_received"] = progress.bytes_received
+        if progress.bytes_total is not None:
+            fields["bytes_total"] = progress.bytes_total
+        if progress.phase == "verification":
+            self._emit_verification(progress.message, **fields)
+        else:
+            self._emit_progress(progress.message, **fields)
 
     def _add_scrollable_tab(self, notebook: ttk.Notebook, text: str) -> tuple[ttk.Frame, tk.Canvas]:
         shell = ttk.Frame(notebook)
@@ -1032,8 +1117,7 @@ class TailsClonerApp(tk.Tk):
 
     @staticmethod
     def _require_https_remote_url(url: str, purpose: str) -> None:
-        if urlparse(url).scheme.casefold() != "https":
-            raise ValueError(f"{purpose} URL must use HTTPS: {url}")
+        require_https_url(url, purpose)
 
     def _start_remote_download(self) -> None:
         if self.__dict__.get("_download_in_progress", False) or self.__dict__.get("_write_in_progress", False):
@@ -1050,7 +1134,7 @@ class TailsClonerApp(tk.Tk):
         if not signature_url:
             self.controller.state.status_message = "Remote IMG has no detached OpenPGP signature; refusing download."
             return
-        if shutil.which("gpg") is None:
+        if not gpg_available():
             self.controller.state.status_message = (
                 "GnuPG (gpg) is required for Tails image signature verification; refusing download."
             )
@@ -1080,88 +1164,6 @@ class TailsClonerApp(tk.Tk):
             self._set_download_in_progress(False)
             raise
 
-    def _read_remote_checksum(self, checksum_url: str) -> str:
-        self._require_https_remote_url(checksum_url, "Remote checksum")
-        if should_use_torify():
-            checksum_text = fetch_text_torified(checksum_url, 30)
-            if len(checksum_text.encode("utf-8")) > 256 * 1024:
-                raise ValueError("Published checksum response is unexpectedly large")
-            return checksum_text
-
-        with urlopen(checksum_url, timeout=30) as checksum_response:  # noqa: S310 - HTTPS enforced
-            effective_url = str(checksum_response.geturl()) if hasattr(checksum_response, "geturl") else checksum_url
-            self._require_https_remote_url(effective_url, "Remote checksum redirect")
-            checksum_payload: bytes = checksum_response.read(256 * 1024 + 1)
-        if len(checksum_payload) > 256 * 1024:
-            raise ValueError("Published checksum response is unexpectedly large")
-        return checksum_payload.decode("utf-8", errors="strict")
-
-    def _download_remote_image_to(self, img_url: str, partial_path: Path) -> None:
-        self._require_https_remote_url(img_url, "Remote IMG")
-        if should_use_torify():
-            subprocess.run(
-                [
-                    "torify",
-                    "curl",
-                    "-fL",
-                    "--proto",
-                    "=https",
-                    "--proto-redir",
-                    "=https",
-                    "--output",
-                    str(partial_path),
-                    img_url,
-                ],
-                check=True,
-                text=True,
-                capture_output=True,
-            )
-            return
-
-        with (
-            urlopen(img_url, timeout=60) as response,  # noqa: S310 - HTTPS enforced
-            partial_path.open("wb") as out,
-        ):
-            effective_url = str(response.geturl()) if hasattr(response, "geturl") else img_url
-            self._require_https_remote_url(effective_url, "Remote IMG redirect")
-            while chunk := response.read(1024 * 1024):
-                out.write(chunk)
-
-    def _download_remote_signature_to(self, signature_url: str, signature_path: Path) -> None:
-        self._require_https_remote_url(signature_url, "Remote signature")
-        maximum_size = 1024 * 1024
-        if should_use_torify():
-            subprocess.run(
-                [
-                    "torify",
-                    "curl",
-                    "-fL",
-                    "--proto",
-                    "=https",
-                    "--proto-redir",
-                    "=https",
-                    "--max-filesize",
-                    str(maximum_size),
-                    "--output",
-                    str(signature_path),
-                    signature_url,
-                ],
-                check=True,
-                text=True,
-                capture_output=True,
-            )
-            if signature_path.stat().st_size > maximum_size:
-                raise ValueError("Published OpenPGP signature is unexpectedly large")
-            return
-
-        with urlopen(signature_url, timeout=30) as response:  # noqa: S310 - HTTPS enforced
-            effective_url = str(response.geturl()) if hasattr(response, "geturl") else signature_url
-            self._require_https_remote_url(effective_url, "Remote signature redirect")
-            payload: bytes = response.read(maximum_size + 1)
-        if len(payload) > maximum_size:
-            raise ValueError("Published OpenPGP signature is unexpectedly large")
-        signature_path.write_bytes(payload)
-
     def _download_selected_remote_image(
         self,
         img_url: str,
@@ -1173,65 +1175,80 @@ class TailsClonerApp(tk.Tk):
         cache_dir = Path.home() / ".cache" / "tails-cloner-clone" / "downloads"
         cache_dir.mkdir(parents=True, exist_ok=True)
         target_path = cache_dir / filename
-        partial_path: Path | None = None
-        signature_path: Path | None = None
-
         try:
-            checksum_text = self._read_remote_checksum(checksum_url)
-            expected_digest = parse_sha256_text(checksum_text, expected_filename=filename)
-
-            with NamedTemporaryFile(
-                mode="wb",
-                prefix=f".{filename}.",
-                suffix=".part",
-                dir=cache_dir,
-                delete=False,
-            ) as out:
-                partial_path = Path(out.name)
-            self._download_remote_image_to(img_url, partial_path)
-
-            actual_digest = verify_sha256(partial_path, expected_digest)
-
-            with NamedTemporaryFile(
-                mode="wb",
-                prefix=f".{filename}.",
-                suffix=".sig.part",
-                dir=cache_dir,
-                delete=False,
-            ) as signature_file:
-                signature_path = Path(signature_file.name)
-            self._download_remote_signature_to(signature_url, signature_path)
-            signing_fingerprint = verify_openpgp_detached_signature(
-                partial_path,
-                signature_path,
-                self._asset_path("tails-signing-minimal.key"),
+            result = VerifiedImageDownloader(
+                key_path=self._asset_path("tails-signing-minimal.key")
+            ).download(
+                RemoteImageRequest(
+                    version=version,
+                    image_url=img_url,
+                    checksum_url=checksum_url,
+                    signature_url=signature_url,
+                    destination=target_path,
+                ),
+                progress_callback=self._on_download_progress,
             )
-
-            partial_path.replace(target_path)
-            partial_path = None
+            self._emit_verification(
+                "Verified Tails image with SHA-256 and pinned OpenPGP",
+                activity="download",
+                phase="complete",
+                version=result.version,
+                filename=filename,
+                sha256=result.sha256,
+                signing_fingerprint=result.signing_fingerprint,
+                reused_existing=result.reused_existing,
+            )
+            self._emit_completion(
+                {
+                    "activity": "download",
+                    "status": "success",
+                    "version": result.version,
+                    "filename": filename,
+                    "sha256": result.sha256,
+                    "signing_fingerprint": result.signing_fingerprint,
+                    "reused_existing": result.reused_existing,
+                }
+            )
             self._queue_ui(
                 partial(
                     self._apply_remote_download_success,
-                    target_path,
+                    result.path,
                     filename,
-                    actual_digest,
-                    signing_fingerprint,
-                    img_url,
-                    version,
+                    result.sha256,
+                    result.signing_fingerprint,
+                    result.source_url,
+                    result.version,
                 )
             )
         except Exception as error:  # noqa: BLE001 - visible UI feedback
-            if partial_path is not None:
-                partial_path.unlink(missing_ok=True)
+            if isinstance(error, DownloadVerificationError):
+                exit_code = ExitCode.VERIFICATION_FAILED
+                category = "verification_failed"
+            elif isinstance(error, DownloadNetworkError):
+                exit_code = ExitCode.DOWNLOAD_FAILED
+                category = "download_failed"
+            else:
+                exit_code = ExitCode.DOWNLOAD_FAILED
+                category = "download_or_verification_failed"
+            self._emit_failure(
+                str(error),
+                exit_code=exit_code,
+                category=category,
+                details={"activity": "download", "version": version, "filename": filename},
+            )
             self._queue_ui(partial(self._apply_remote_download_failure, str(error)))
-        finally:
-            if signature_path is not None:
-                signature_path.unlink(missing_ok=True)
 
     def _show_remote_download_started(self, filename: str) -> None:
         self.remote_state_var.set("downloading; SHA-256 and OpenPGP verification pending")
         self.source_status_var.set(f"Downloading and verifying SHA-256 + OpenPGP for {filename}…")
         self.controller.state.status_message = f"Downloading and cryptographically verifying {filename}…"
+        self._emit_progress(
+            "Starting verified Tails image download",
+            activity="download",
+            phase="start",
+            filename=filename,
+            version=self.controller.state.selected_version,
+        )
 
     def _apply_remote_download_success(
         self,
@@ -1249,11 +1266,13 @@ class TailsClonerApp(tk.Tk):
         self.remote_state_var.set("SHA-256 + OpenPGP verified")
         self.suggested_local_path_var.set(str(target_path))
         self.local_checksum_var.set(digest)
-        self.controller.state.verified_image_path = str(target_path)
-        self.controller.state.verified_image_sha256 = digest
-        self.controller.state.verified_image_version = version
-        self.controller.state.verified_image_source_url = source_url
-        self.controller.state.verified_image_signing_fingerprint = signing_fingerprint
+        self.controller.record_verified_image(
+            path=str(target_path),
+            sha256=digest,
+            version=version,
+            source_url=source_url,
+            signing_fingerprint=signing_fingerprint,
+        )
         self.source_status_var.set(f"Downloaded and verified to {target_path}")
         self.controller.state.status_message = (
             f"Downloaded and verified SHA-256 + OpenPGP for {filename}. Using local file source."
@@ -1313,6 +1332,16 @@ class TailsClonerApp(tk.Tk):
             return
         is_upgrade = plan.operation == OperationKind.UPGRADE
         operation_label = "upgrade" if is_upgrade else "installation"
+        sink = self._event_sink()
+        if sink is not None:
+            sink.write_boundary(
+                "Operator confirmed destructive GUI operation; controller will revalidate identities before writing",
+                activity="write",
+                operation=plan.operation.value,
+                target=plan.target.stable_path or plan.target.path,
+                destructive_scope=plan.destructive_scope,
+                persistence_behavior=plan.persistence_behavior,
+            )
         self._write_in_progress = True
         self._set_write_controls_locked(True)
         self._show_clone_progress(True, operation_label=operation_label)
@@ -1331,6 +1360,11 @@ class TailsClonerApp(tk.Tk):
 
         try:
             def on_progress(message: str) -> None:
+                self._emit_progress(
+                    message,
+                    activity="write",
+                    operation="upgrade" if is_upgrade else "install",
+                )
                 self._queue_ui(partial(self._set_progress_text, message))
 
             if is_upgrade:
@@ -1338,10 +1372,31 @@ class TailsClonerApp(tk.Tk):
             else:
                 self.controller.clone_selected_image(image_path, device_path, progress_callback=on_progress)
 
+            self._emit_completion(
+                {
+                    "activity": "write",
+                    "status": "success",
+                    "operation": "upgrade" if is_upgrade else "install",
+                    "target": device_path,
+                    "persistence_behavior": (
+                        "preserved_if_present" if is_upgrade else "destroyed_if_present"
+                    ),
+                }
+            )
             self._queue_ui(lambda: self._finish_write_success(complete_title, complete_message))
         except Exception as error:  # noqa: BLE001 - converted into visible UI feedback
             error_message = str(error)
             self.controller.state.status_message = f"{operation_label.title()} failed: {error_message}"
+            self._emit_failure(
+                error_message,
+                exit_code=ExitCode.UPGRADE_FAILED if is_upgrade else ExitCode.INSTALL_FAILED,
+                category="upgrade_failed" if is_upgrade else "install_failed",
+                details={
+                    "activity": "write",
+                    "operation": "upgrade" if is_upgrade else "install",
+                    "target": device_path,
+                },
+            )
             self._queue_ui(partial(self._finish_write_failure, operation_label, error_message))
 
     def _set_progress_text(self, message: str) -> None:
@@ -1425,6 +1480,15 @@ class TailsClonerApp(tk.Tk):
     def _sync_state(self) -> None:
         self._drain_ui_events()
         self.status_var.set(self.controller.state.status_message)
+        if self.controller.state.status_message != self._last_status:
+            self._last_status = self.controller.state.status_message
+            self._emit_resolution(
+                resource="application_state",
+                status=self._last_status,
+                source_mode=self.controller.state.source_mode.value,
+                versions_loading=self.controller.state.versions_loading,
+                devices_loading=self.controller.state.devices_loading,
+            )
         self._sync_source_mode()
         self._sync_source_details()
         self._sync_tab2_source_summary()
@@ -1490,6 +1554,11 @@ class TailsClonerApp(tk.Tk):
         if snapshot == self._last_versions_snapshot:
             return
         self._last_versions_snapshot = snapshot
+        self._emit_discovery(
+            resource="versions",
+            count=len(snapshot),
+            selected_version=self.controller.state.selected_version,
+        )
         self.versions_list.delete(0, tk.END)
         for entry in self.controller.state.available_versions:
             self.versions_list.insert(tk.END, entry.version)
@@ -1515,6 +1584,13 @@ class TailsClonerApp(tk.Tk):
         snapshot = tuple(labels)
         if snapshot != self._last_devices_snapshot:
             self._last_devices_snapshot = snapshot
+            all_devices = self.controller.state.devices
+            self._emit_discovery(
+                resource="devices",
+                count=len(all_devices),
+                selectable_count=sum(1 for device in all_devices if device.selectable),
+                protected_count=sum(1 for device in all_devices if device.disabled_reason),
+            )
             self._device_labels = labels
             values = list(labels)
 

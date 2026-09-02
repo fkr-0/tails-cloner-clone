@@ -19,6 +19,10 @@ from tails_cloner.verification import verify_sha256
 ProgressCallback = Callable[[str], None]
 
 
+class SafetyRefusalError(RuntimeError):
+    """A destructive operation was refused before mutation for safety reasons."""
+
+
 class VersionServiceProtocol(Protocol):
     def fetch_versions(self) -> list[VersionAssets]: ...
 
@@ -96,11 +100,11 @@ class ApplicationController:
         versions and devices.
         """
         # Check if we're running from Tails
-        self._detect_running_tails()
+        self.detect_running_tails()
         self.executor.submit(self.refresh_versions)
         self.executor.submit(self.refresh_devices)
 
-    def _detect_running_tails(self) -> None:
+    def detect_running_tails(self) -> None:
         """Detect if running from Tails and update state accordingly."""
         running = is_running_tails()
         self.state.running_tails_available = running
@@ -112,6 +116,10 @@ class ApplicationController:
         else:
             self.state.source_mode = SourceMode.LOCAL
             self.state.status_message = "Not running from Tails. Use a downloaded image."
+
+    def _detect_running_tails(self) -> None:
+        """Backward-compatible private alias for older callers/tests."""
+        self.detect_running_tails()
 
     def set_source_mode(self, mode: SourceMode) -> None:
         """Change the source mode."""
@@ -198,9 +206,17 @@ class ApplicationController:
     def _find_device_in(devices: list[BlockDevice], device_path: str) -> BlockDevice | None:
         target_parent = get_parent_disk_path(device_path)
         for device in devices:
-            if device.path == device_path or device.path == target_parent:
+            if (
+                device.path == device_path
+                or device.path == target_parent
+                or (device.stable_path and device.stable_path == device_path)
+            ):
                 return device
         return None
+
+    def find_target_device(self, device_path: str) -> BlockDevice:
+        """Resolve a currently discovered target by kernel or stable by-id path."""
+        return self._find_target_device(device_path)
 
     def _find_target_device(self, device_path: str) -> BlockDevice:
         if not self.state.devices:
@@ -273,7 +289,7 @@ class ApplicationController:
     def _require_valid_target_plan(self, operation: OperationKind, device_path: str, image_path: str | None = None) -> OperationPlan:
         initial_plan = self.plan_target_operation(operation, device_path, image_path)
         if initial_plan.blocking_errors:
-            raise RuntimeError("\n".join(initial_plan.blocking_errors))
+            raise SafetyRefusalError("\n".join(initial_plan.blocking_errors))
 
         source_path = ""
         if self.state.source_mode == SourceMode.RUNNING:
@@ -288,35 +304,37 @@ class ApplicationController:
         try:
             fresh_devices = self.device_service.list_devices()
         except Exception as error:  # noqa: BLE001 - converted into a safe refusal
-            raise RuntimeError(f"Could not revalidate target device immediately before writing: {error}") from error
+            raise SafetyRefusalError(
+                f"Could not revalidate target device immediately before writing: {error}"
+            ) from error
 
         self.state.devices = fresh_devices
         self.annotate_device_selection_state()
         fresh_target = self._find_device_in(self.state.devices, device_path)
         if fresh_target is None:
-            raise RuntimeError(
+            raise SafetyRefusalError(
                 f"Target device disappeared before the write started: {device_path}. Reselect it and confirm again."
             )
         if initial_plan.target.identity_key != fresh_target.identity_key:
-            raise RuntimeError(
+            raise SafetyRefusalError(
                 f"Target device identity changed before the write started at {device_path}. "
                 "The device may have been unplugged or replaced; reselect it and confirm again."
             )
 
         if source_path and initial_source is None:
-            raise RuntimeError(
+            raise SafetyRefusalError(
                 f"Source device was not present in the confirmed device list: {source_path}. Refresh and validate it again."
             )
 
         if source_path:
             fresh_source = self._find_device_in(self.state.devices, source_path)
             if fresh_source is None:
-                raise RuntimeError(
+                raise SafetyRefusalError(
                     f"Source device disappeared before the upgrade started: {source_path}. "
                     "Reconnect and validate it again."
                 )
             if initial_source is not None and initial_source.identity_key != fresh_source.identity_key:
-                raise RuntimeError(
+                raise SafetyRefusalError(
                     f"Source device identity changed before the upgrade started at {source_path}. "
                     "Reconnect and validate it again."
                 )
@@ -327,8 +345,37 @@ class ApplicationController:
             target=fresh_target,
         )
         if fresh_plan.blocking_errors:
-            raise RuntimeError("\n".join(fresh_plan.blocking_errors))
+            raise SafetyRefusalError("\n".join(fresh_plan.blocking_errors))
         return fresh_plan
+
+    def discover_devices(self) -> list[BlockDevice]:
+        """Discover devices synchronously, raising errors for operator callers."""
+        self.state.devices = self.device_service.list_devices()
+        self.annotate_device_selection_state()
+        return self.state.devices
+
+    def discover_versions(self) -> list[VersionAssets]:
+        """Discover the remote version catalog synchronously."""
+        self.state.available_versions = self.version_service.fetch_versions()
+        if self.state.available_versions:
+            self.apply_version_selection(self.state.available_versions[0])
+        return self.state.available_versions
+
+    def record_verified_image(
+        self,
+        *,
+        path: str,
+        sha256: str,
+        version: str,
+        source_url: str,
+        signing_fingerprint: str,
+    ) -> None:
+        """Record verified-image provenance for planner output and write-time rechecks."""
+        self.state.verified_image_path = path
+        self.state.verified_image_sha256 = sha256
+        self.state.verified_image_version = version
+        self.state.verified_image_source_url = source_url
+        self.state.verified_image_signing_fingerprint = signing_fingerprint
 
     def shutdown(self) -> None:
         shutdown = getattr(self.executor, "shutdown", None)
@@ -340,10 +387,8 @@ class ApplicationController:
         self.state.versions_loading = True
         self.state.status_message = "Loading remote Tails versions…"
         try:
-            versions = self.version_service.fetch_versions()
-            self.state.available_versions = versions
+            versions = self.discover_versions()
             if versions:
-                self.apply_version_selection(versions[0])
                 self.state.status_message = f"Loaded {len(versions)} remote Tails versions."
             else:
                 self.state.selected_version = ""
@@ -362,8 +407,7 @@ class ApplicationController:
         self.state.devices_loading = True
         self.state.status_message = "Scanning devices…"
         try:
-            self.state.devices = self.device_service.list_devices()
-            self.annotate_device_selection_state()
+            self.discover_devices()
             if self.state.devices:
                 self.state.status_message = f"Found {len(self.state.devices)} device(s)."
             else:
