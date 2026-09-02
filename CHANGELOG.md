@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.5.4 - 2026-09-02
+
+### Upgrade and Device Safety
+
+- Make image attachment robust when `udevadm settle` fails or partition nodes appear late: poll specifically for the loop-device partitions after read-only `losetup --partscan`, continue when the required state is visible, detach cleanly on failure, and report a bounded diagnostic when it never appears.
+- Identify the block device backing the currently running system from `/` and Tails live-mount semantics, expose an explicit `Currently running Tails` / `Running system` status in device data and UI labels, and refuse it as a write target.
+
+### UI and Accessibility
+
+- Make the Source and Write views vertically scrollable so primary actions remain reachable on ordinary laptop/desktop heights; reveal focused controls automatically and route mouse-wheel scrolling without stealing interaction from list/text widgets.
+- Replace the single-line write status with a scrollable progress history that supports keyboard navigation, preserves completion/failure output, and only auto-follows while the user is already at the bottom.
+- Centralize light/dark theming with semantic colors and improve contrast and interaction states for combobox fields and dropdown items, radio buttons, checkboxes, buttons, focus/disabled/selected states, scrollbars, progress/status text, warnings, native Tk list/text widgets, and destructive actions.
+- Make the downloads link keyboard-focusable and activatable, and replace symbol-only theme/close controls with explicit labels.
+
+### Qualification
+
+- Expand regression coverage for delayed loop-partition discovery, running-system device classification, responsive scrolling/progress behavior, and theme contrast/control styling.
+- Requalify the combined release candidate with the full pytest suite, Ruff, mypy, diff checks, runtime dark/light GUI smoke, and AppImage build/smoke gates.
+
 ## v0.5.3 - 2026-09-02
 
 ### Safety and Upgrade Hardening
