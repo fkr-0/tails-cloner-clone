@@ -391,6 +391,8 @@ class ControllerTests(unittest.TestCase):
 
         self.assertEqual(controller.state.devices[0].path, "/dev/sdb")
         self.assertTrue(controller.state.devices[0].is_running_system_device)
+        self.assertTrue(controller.state.devices[0].is_current_system_device)
+        self.assertEqual(controller.state.devices[0].status_label, "Currently running Tails")
         self.assertFalse(controller.state.devices[0].selectable)
         self.assertIn("currently running Tails", controller.state.devices[0].disabled_reason)
 
@@ -419,6 +421,34 @@ class ControllerTests(unittest.TestCase):
 
         self.assertFalse(system_disk.selectable)
         self.assertIn("currently running operating system", system_disk.disabled_reason)
+
+    def test_annotation_preserves_running_system_root_label(self) -> None:
+        system_disk = BlockDevice(
+            path="/dev/nvme0n1",
+            size_bytes=512 * 1024**3,
+            size_label="512.0 GiB",
+            model="System Disk",
+            vendor="NVMe",
+            transport="nvme",
+            removable=False,
+            is_current_system_device=True,
+            is_host_system_device=True,
+            disabled_reason="This device backs the currently running system.",
+        )
+        controller = ApplicationController(
+            state=AppState(devices=[system_disk]),
+            version_service=FakeVersionService(),
+            device_service=FakeDeviceService(),
+            clone_service=FakeCloneService(),
+            executor=ThreadPoolExecutor(max_workers=1),
+        )
+        self.addCleanup(controller.shutdown)
+
+        controller.annotate_device_selection_state()
+
+        self.assertEqual(system_disk.status_label, "Running system")
+        self.assertFalse(system_disk.selectable)
+        self.assertIn("currently running system", system_disk.disabled_reason)
 
     def test_install_rejects_running_device_target(self) -> None:
         clone_service = FakeCloneService()

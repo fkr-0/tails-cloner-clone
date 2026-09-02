@@ -104,6 +104,7 @@ def test_devices_list_json_marks_running_device_not_selectable() -> None:
     assert result == 0
     assert payload["devices"][0]["path"] == "/dev/sdb"
     assert payload["devices"][0]["is_running_system_device"] is True
+    assert payload["devices"][0]["status_label"] == "Currently running Tails"
     assert payload["devices"][0]["selectable"] is False
     assert payload["devices"][1]["selectable"] is True
 

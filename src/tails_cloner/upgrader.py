@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,12 +20,15 @@ from tails_cloner.source import LocalImageSource
 
 ProgressCallback = Callable[[str], None]
 RunCommand = Callable[[list[str]], subprocess.CompletedProcess[str]]
+Sleep = Callable[[float], None]
 
 LSBLK_COLUMNS = "NAME,PATH,FSTYPE,LABEL,PARTLABEL,SIZE,TYPE,RO,MOUNTPOINTS"
 TAILS_FILESYSTEM_LABEL = "tails"
 PERSISTENCE_LABELS = {"persistence", "tailsdata", "tailsdata_unlocked"}
 PROTECTED_SYSTEM_MOUNTPOINTS = {"/", "/boot", "/boot/efi", "/home", "/usr", "/var"}
 PROTECTED_LIVE_MOUNT_PREFIXES = ("/lib/live/mount", "/run/live")
+LOOP_PARTITION_WAIT_TIMEOUT_SECONDS = 2.0
+LOOP_PARTITION_POLL_INTERVAL_SECONDS = 0.1
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,17 +161,81 @@ def has_persistence_partition(device: str, runner: RunCommand = run_command) -> 
     return False
 
 
+def _best_effort_udev_settle(runner: RunCommand) -> str:
+    """Ask udev to settle, but return diagnostics instead of making it authoritative."""
+    try:
+        result = runner(["udevadm", "settle"])
+    except (OSError, subprocess.SubprocessError) as error:
+        return f"{type(error).__name__}: {error}"
+    if result.returncode != 0:
+        stderr = result.stderr.strip() if result.stderr else "no stderr"
+        return f"exit {result.returncode}: {stderr}"
+    return ""
+
+
+def _wait_for_loop_partitions(
+    loopdev: str,
+    runner: RunCommand,
+    *,
+    timeout_seconds: float = LOOP_PARTITION_WAIT_TIMEOUT_SECONDS,
+    poll_interval_seconds: float = LOOP_PARTITION_POLL_INTERVAL_SECONDS,
+    sleep: Sleep = time.sleep,
+    settle_diagnostic: str = "",
+) -> None:
+    interval = max(0.001, poll_interval_seconds)
+    attempts = max(1, int(max(0.0, timeout_seconds) / interval) + 1)
+    last_diagnostic = "no partition nodes reported by lsblk"
+    for attempt in range(attempts):
+        try:
+            visible = [partition.path for partition in partition_infos(loopdev, runner) if partition.path]
+        except (OSError, subprocess.SubprocessError, RuntimeError, ValueError) as error:
+            last_diagnostic = f"lsblk probe failed: {type(error).__name__}: {error}"
+        else:
+            if visible:
+                return
+            last_diagnostic = "lsblk reported the loop device but no partition nodes"
+        if attempt + 1 < attempts:
+            sleep(interval)
+
+    settle_suffix = f"; udevadm settle also failed ({settle_diagnostic})" if settle_diagnostic else ""
+    raise RuntimeError(
+        f"Loop partitions for {loopdev} did not become visible within {timeout_seconds:.2f}s "
+        f"after losetup --partscan: {last_diagnostic}{settle_suffix}"
+    )
+
+
 def attach_image(
     image_path: str | Path,
     runner: RunCommand = run_command,
     privileged_runner: RunCommand | None = None,
+    *,
+    partition_wait_timeout_seconds: float = LOOP_PARTITION_WAIT_TIMEOUT_SECONDS,
+    partition_poll_interval_seconds: float = LOOP_PARTITION_POLL_INTERVAL_SECONDS,
+    sleep: Sleep = time.sleep,
 ) -> str:
     mutate = _resolve_privileged_runner(runner, privileged_runner)
     result = mutate(["losetup", "--read-only", "--find", "--partscan", "--show", str(image_path)])
     loopdev = result.stdout.strip()
     if not loopdev:
         raise RuntimeError(f"losetup did not return a loop device for {image_path}")
-    runner(["udevadm", "settle"])
+    settle_diagnostic = _best_effort_udev_settle(runner)
+    try:
+        _wait_for_loop_partitions(
+            loopdev,
+            runner,
+            timeout_seconds=partition_wait_timeout_seconds,
+            poll_interval_seconds=partition_poll_interval_seconds,
+            sleep=sleep,
+            settle_diagnostic=settle_diagnostic,
+        )
+    except RuntimeError as error:
+        try:
+            mutate(["losetup", "--detach", loopdev])
+        except (OSError, subprocess.SubprocessError) as cleanup_error:
+            raise RuntimeError(
+                f"{error}; additionally failed to detach {loopdev}: {type(cleanup_error).__name__}: {cleanup_error}"
+            ) from error
+        raise
     return loopdev
 
 
@@ -249,7 +317,7 @@ def _upgrade_from_source_partition(
     mutate(command)
     runner(["sync"])
     mutate(["blockdev", "--flushbufs", target_device])
-    runner(["udevadm", "settle"])
+    _best_effort_udev_settle(runner)
 
     # Ensure the system partition is still recognisable and persistence was not lost.
     find_tails_system_partition(target_device, runner)

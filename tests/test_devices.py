@@ -1,9 +1,12 @@
+import json
+import subprocess
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from tails_cloner.devices import (
     MIN_INSTALLATION_SIZE_GB,
+    DeviceService,
     find_stable_device_path,
     format_bytes_as_gib,
     parse_lsblk_json,
@@ -203,9 +206,11 @@ class DeviceParsingTests(unittest.TestCase):
         device = parse_lsblk_json(payload)[0]
 
         self.assertTrue(device.is_host_system_device)
+        self.assertTrue(device.is_current_system_device)
         self.assertFalse(device.selectable)
-        self.assertIn("currently running operating system", device.disabled_reason)
-        self.assertIn("current OS disk", device.pretty_name)
+        self.assertIn("currently running system", device.disabled_reason)
+        self.assertEqual(device.status_label, "Running system")
+        self.assertIn("[Running system]", device.pretty_name)
 
     def test_home_only_disk_is_protected_as_current_os_storage(self) -> None:
         payload = {
@@ -235,6 +240,8 @@ class DeviceParsingTests(unittest.TestCase):
         device = parse_lsblk_json(payload)[0]
 
         self.assertTrue(device.is_host_system_device)
+        self.assertFalse(device.is_current_system_device)
+        self.assertEqual(device.status_label, "Current OS storage")
         self.assertFalse(device.selectable)
 
     def test_running_live_medium_mount_is_protected_even_without_controller_annotation(self) -> None:
@@ -266,7 +273,103 @@ class DeviceParsingTests(unittest.TestCase):
         device = parse_lsblk_json(payload)[0]
 
         self.assertTrue(device.is_host_system_device)
+        self.assertTrue(device.is_current_system_device)
+        self.assertEqual(device.status_label, "Running system")
         self.assertFalse(device.selectable)
+
+    def test_findmnt_root_source_marks_backing_disk_when_lsblk_mountpoint_is_not_reported(self) -> None:
+        payload = {
+            "blockdevices": [
+                {
+                    "path": "/dev/nvme0n1",
+                    "size": str(512 * 1024**3),
+                    "model": "System Disk",
+                    "vendor": "NVMe",
+                    "rm": False,
+                    "hotplug": False,
+                    "tran": "nvme",
+                    "type": "disk",
+                    "ro": False,
+                    "children": [
+                        {
+                            "path": "/dev/nvme0n1p2",
+                            "type": "part",
+                            "mountpoints": [None],
+                            "children": [
+                                {
+                                    "path": "/dev/mapper/root",
+                                    "type": "crypt",
+                                    "fstype": "btrfs",
+                                    "mountpoints": [None],
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }
+
+        device = parse_lsblk_json(payload, running_root_source="/dev/mapper/root[/@]")[0]
+
+        self.assertTrue(device.is_current_system_device)
+        self.assertFalse(device.selectable)
+        self.assertEqual(device.status_label, "Running system")
+
+    def test_whole_disk_root_filesystem_is_protected(self) -> None:
+        payload = {
+            "blockdevices": [
+                {
+                    "path": "/dev/vda",
+                    "size": str(64 * 1024**3),
+                    "model": "VM Disk",
+                    "vendor": "Virtio",
+                    "rm": False,
+                    "hotplug": False,
+                    "tran": "virtio",
+                    "type": "disk",
+                    "ro": False,
+                    "fstype": "ext4",
+                    "mountpoints": ["/"],
+                }
+            ]
+        }
+
+        device = parse_lsblk_json(payload)[0]
+
+        self.assertTrue(device.is_current_system_device)
+        self.assertTrue(device.is_host_system_device)
+        self.assertFalse(device.selectable)
+
+    def test_device_service_uses_findmnt_root_source_for_running_system_label(self) -> None:
+        payload = {
+            "blockdevices": [
+                {
+                    "path": "/dev/sda",
+                    "size": str(64 * 1024**3),
+                    "model": "Disk",
+                    "vendor": "ATA",
+                    "rm": False,
+                    "hotplug": False,
+                    "tran": "sata",
+                    "type": "disk",
+                    "ro": False,
+                    "children": [{"path": "/dev/sda2", "type": "part", "mountpoints": [None]}],
+                }
+            ]
+        }
+        commands: list[list[str]] = []
+
+        def run(command, **_kwargs):
+            commands.append(command)
+            if command[0] == "findmnt":
+                return subprocess.CompletedProcess(command, 0, stdout="/dev/sda2\n", stderr="")
+            return subprocess.CompletedProcess(command, 0, stdout=json.dumps(payload), stderr="")
+
+        device = DeviceService(run=run).list_devices()[0]
+
+        self.assertTrue(device.is_current_system_device)
+        self.assertEqual(device.status_label, "Running system")
+        self.assertEqual(commands[0], ["findmnt", "-n", "-o", "SOURCE", "--target", "/"])
 
     def test_device_size_thresholds(self) -> None:
         """Test minimum size requirements for install vs upgrade."""

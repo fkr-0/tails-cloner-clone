@@ -61,9 +61,22 @@ class BlockDevice:
     is_big_enough_for_installation: bool = True
     is_big_enough_for_upgrade: bool = True
     is_running_system_device: bool = False
+    is_current_system_device: bool = False
     is_host_system_device: bool = False
     is_attached_source_device: bool = False
     disabled_reason: str = ""
+
+    @property
+    def status_label(self) -> str:
+        if self.is_running_system_device:
+            return "Currently running Tails"
+        if self.is_current_system_device:
+            return "Running system"
+        if self.is_attached_source_device:
+            return "Attached Tails source"
+        if self.is_host_system_device:
+            return "Current OS storage"
+        return ""
 
     @property
     def pretty_name(self) -> str:
@@ -74,14 +87,11 @@ class BlockDevice:
         removable_indicator = " (removable)" if self.removable else ""
         read_only_indicator = " (read-only)" if self.read_only else ""
         tails_indicator = " [Tails installed]" if self.has_tails else ""
-        running_indicator = " [running Tails source]" if self.is_running_system_device else ""
-        host_indicator = " [current OS disk]" if self.is_host_system_device else ""
-        source_indicator = " [attached source]" if self.is_attached_source_device else ""
+        status_indicator = f" [{self.status_label}]" if self.status_label else ""
         disabled_indicator = " [not selectable]" if self.disabled_reason else ""
         return (
             f"{self.path} · {self.size_label} · {vendor} {model}{identity_indicator}"
-            f"{removable_indicator}{read_only_indicator}{tails_indicator}{running_indicator}"
-            f"{host_indicator}{source_indicator}{disabled_indicator}"
+            f"{removable_indicator}{read_only_indicator}{tails_indicator}{status_indicator}{disabled_indicator}"
         ).strip()
 
     @property

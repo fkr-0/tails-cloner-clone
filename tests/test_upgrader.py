@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from tails_cloner.upgrader import (
+    attach_image,
     build_partition_upgrade_command,
     build_privileged_command,
     find_partition,
@@ -102,6 +103,36 @@ class MutationRunner(FakeRunner):
     pass
 
 
+class SettleFailRunner(FakeRunner):
+    def __call__(self, command: list[str]) -> subprocess.CompletedProcess[str]:
+        if command == ["udevadm", "settle"]:
+            self.commands.append(command)
+            raise subprocess.CalledProcessError(1, command, stderr="udev queue busy")
+        return super().__call__(command)
+
+
+class SettleNonzeroRunner(FakeRunner):
+    def __call__(self, command: list[str]) -> subprocess.CompletedProcess[str]:
+        if command == ["udevadm", "settle"]:
+            self.commands.append(command)
+            return subprocess.CompletedProcess(command, 1, stdout="", stderr="udev queue busy")
+        return super().__call__(command)
+
+
+class DelayedLoopPartitionRunner(FakeRunner):
+    def __init__(self, empty_probes: int) -> None:
+        super().__init__()
+        self.empty_probes = empty_probes
+        self.loop_probes = 0
+
+    def _parts_for(self, device: str) -> list[dict[str, object]]:
+        if device == "/dev/loop7":
+            self.loop_probes += 1
+            if self.loop_probes <= self.empty_probes:
+                return []
+        return super()._parts_for(device)
+
+
 def test_find_partition_matches_label_case_insensitively() -> None:
     runner = FakeRunner()
 
@@ -139,6 +170,70 @@ def test_build_partition_upgrade_command_is_partition_scoped() -> None:
     ]
 
 
+def test_attach_image_tolerates_immediate_udevadm_settle_failure_when_partition_is_visible() -> None:
+    reader = SettleFailRunner()
+    mutator = MutationRunner()
+
+    loopdev = attach_image(
+        "/tmp/tails.img",
+        reader,
+        mutator,
+        partition_wait_timeout_seconds=0.1,
+        partition_poll_interval_seconds=0.01,
+        sleep=lambda _seconds: None,
+    )
+
+    assert loopdev == "/dev/loop7"
+    assert ["udevadm", "settle"] in reader.commands
+    assert any(command[-1] == "/dev/loop7" for command in reader.commands if command[:1] == ["lsblk"])
+    assert ["losetup", "--detach", "/dev/loop7"] not in mutator.commands
+
+
+def test_attach_image_tolerates_nonzero_settle_result_when_runner_does_not_raise() -> None:
+    reader = SettleNonzeroRunner()
+    mutator = MutationRunner()
+
+    assert attach_image("/tmp/tails.img", reader, mutator, sleep=lambda _seconds: None) == "/dev/loop7"
+    assert ["udevadm", "settle"] in reader.commands
+
+
+def test_attach_image_retries_until_loop_partition_becomes_visible() -> None:
+    reader = DelayedLoopPartitionRunner(empty_probes=2)
+    mutator = MutationRunner()
+    sleeps: list[float] = []
+
+    loopdev = attach_image(
+        "/tmp/tails.img",
+        reader,
+        mutator,
+        partition_wait_timeout_seconds=0.1,
+        partition_poll_interval_seconds=0.01,
+        sleep=sleeps.append,
+    )
+
+    assert loopdev == "/dev/loop7"
+    assert reader.loop_probes == 3
+    assert sleeps == [0.01, 0.01]
+
+
+def test_attach_image_detaches_loop_after_bounded_partition_visibility_failure() -> None:
+    reader = DelayedLoopPartitionRunner(empty_probes=999)
+    mutator = MutationRunner()
+
+    with pytest.raises(RuntimeError, match="did not become visible within 0.02s"):
+        attach_image(
+            "/tmp/tails.img",
+            reader,
+            mutator,
+            partition_wait_timeout_seconds=0.02,
+            partition_poll_interval_seconds=0.01,
+            sleep=lambda _seconds: None,
+        )
+
+    assert reader.loop_probes == 3
+    assert ["losetup", "--detach", "/dev/loop7"] in mutator.commands
+
+
 def test_image_upgrade_uses_read_only_loop_and_privileged_mutation_boundary(tmp_path: Path) -> None:
     image = tmp_path / "tails-amd64-7.7.2.img"
     image.write_bytes(b"image")
@@ -163,6 +258,18 @@ def test_image_upgrade_uses_read_only_loop_and_privileged_mutation_boundary(tmp_
     assert ["udevadm", "settle"] in reader.commands
     assert not any(command[0] in {"dd", "losetup", "umount", "blockdev"} for command in reader.commands)
     assert any("Persistent Storage is still present" in message for message in progress)
+
+
+def test_image_upgrade_does_not_fail_after_successful_write_when_udev_settle_returns_one(tmp_path: Path) -> None:
+    image = tmp_path / "tails-amd64-7.7.2.img"
+    image.write_bytes(b"image")
+    reader = SettleFailRunner()
+    mutator = MutationRunner()
+
+    upgrade_tails_system_partition(image, "/dev/sdb", runner=reader, privileged_runner=mutator)
+
+    assert ["dd", "if=/dev/loop7p1", "of=/dev/sdb2", "bs=4M", "status=progress", "conv=fsync"] in mutator.commands
+    assert reader.commands.count(["udevadm", "settle"]) == 2
 
 
 def test_upgrade_from_device_is_partition_scoped_without_loop_setup() -> None:

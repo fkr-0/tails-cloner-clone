@@ -181,7 +181,10 @@ class ApplicationController:
             device.is_running_system_device = self.target_is_running_system_device(device.path)
             device.is_attached_source_device = self.target_is_attached_live_source(device.path)
             if device.is_running_system_device:
+                device.is_current_system_device = True
                 device.disabled_reason = "This is the device currently running Tails. It cannot be selected as a target."
+            elif device.is_current_system_device:
+                device.disabled_reason = "This device backs the currently running system. It cannot be selected as a target."
             elif device.is_attached_source_device:
                 device.disabled_reason = "This is the attached Tails source device. It cannot be selected as a target."
             elif device.is_host_system_device:

@@ -188,10 +188,12 @@ def _device_to_dict(device: BlockDevice) -> dict[str, Any]:
         "is_big_enough_for_installation": device.is_big_enough_for_installation,
         "is_big_enough_for_upgrade": device.is_big_enough_for_upgrade,
         "is_running_system_device": device.is_running_system_device,
+        "is_current_system_device": device.is_current_system_device,
         "is_host_system_device": device.is_host_system_device,
         "is_attached_source_device": device.is_attached_source_device,
         "selectable": device.selectable,
         "disabled_reason": device.disabled_reason,
+        "status_label": device.status_label,
         "pretty_name": device.pretty_name,
     }
 

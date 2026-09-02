@@ -95,7 +95,30 @@ def find_stable_device_path(
     return str(min(candidates, key=preference))
 
 
-def parse_lsblk_json(payload: dict[str, Any]) -> list[BlockDevice]:
+def _normalize_root_source(source: str) -> str:
+    source = source.strip()
+    if source.startswith("/dev/"):
+        return source.split("[", 1)[0]
+    return ""
+
+
+def _find_running_root_source(run: RunCommand) -> str:
+    try:
+        result = run(
+            ["findmnt", "-n", "-o", "SOURCE", "--target", "/"],
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if result.returncode != 0:
+        return ""
+    return _normalize_root_source(result.stdout)
+
+
+def parse_lsblk_json(payload: dict[str, Any], *, running_root_source: str = "") -> list[BlockDevice]:
+    normalized_root_source = _normalize_root_source(running_root_source)
     devices: list[BlockDevice] = []
     for raw_item in payload.get("blockdevices", []):
         if not isinstance(raw_item, dict):
@@ -114,11 +137,24 @@ def parse_lsblk_json(payload: dict[str, Any]) -> list[BlockDevice]:
         children = item.get("children") or []
         child_nodes = [child for child in children if isinstance(child, dict)] if isinstance(children, list) else []
         all_descendants = _walk_nodes(child_nodes)
+        system_nodes = [item, *all_descendants]
         partitions = [child for child in all_descendants if child.get("type") == "part"]
         is_host_system_device = any(
             any(_is_protected_mountpoint(mountpoint) for mountpoint in _mountpoints(node))
-            for node in all_descendants
+            for node in system_nodes
         )
+        is_current_system_device = any("/" in _mountpoints(node) for node in system_nodes) or any(
+            any(
+                mountpoint == prefix or mountpoint.startswith(f"{prefix}/")
+                for prefix in PROTECTED_LIVE_MOUNT_PREFIXES
+            )
+            for node in system_nodes
+            for mountpoint in _mountpoints(node)
+        )
+        if normalized_root_source:
+            is_current_system_device = is_current_system_device or any(
+                str(node.get("path") or "") == normalized_root_source for node in system_nodes
+            )
 
         # Detect Tails installation
         has_tails = has_tails_installation(item, partitions)
@@ -154,9 +190,12 @@ def parse_lsblk_json(payload: dict[str, Any]) -> list[BlockDevice]:
                 has_tails=has_tails,
                 is_big_enough_for_installation=size_gb >= MIN_INSTALLATION_SIZE_GB,
                 is_big_enough_for_upgrade=size_gb >= MIN_UPGRADE_SIZE_GB,
+                is_current_system_device=is_current_system_device,
                 is_host_system_device=is_host_system_device,
                 disabled_reason=(
-                    "This device contains filesystems used by the currently running operating system."
+                    "This device backs the currently running system. It cannot be selected as a target."
+                    if is_current_system_device
+                    else "This device contains filesystems used by the currently running operating system."
                     if is_host_system_device
                     else ""
                 ),
@@ -170,6 +209,7 @@ class DeviceService:
         self._run = run
 
     def list_devices(self) -> list[BlockDevice]:
+        running_root_source = _find_running_root_source(self._run)
         result = self._run(
             ["lsblk", "--json", "--bytes", "--output", LSBLK_COLUMNS],
             check=True,
@@ -179,7 +219,7 @@ class DeviceService:
         payload = json.loads(result.stdout)
         if not isinstance(payload, dict):
             raise RuntimeError("lsblk returned a non-object JSON payload")
-        devices = parse_lsblk_json(payload)
+        devices = parse_lsblk_json(payload, running_root_source=running_root_source)
         for device in devices:
             device.stable_path = find_stable_device_path(device.path)
         return devices

@@ -59,8 +59,26 @@ class BlockDeviceTests(unittest.TestCase):
             disabled_reason="running source",
         )
 
-        self.assertIn("[running Tails source]", device.pretty_name)
+        self.assertEqual(device.status_label, "Currently running Tails")
+        self.assertIn("[Currently running Tails]", device.pretty_name)
         self.assertIn("[not selectable]", device.pretty_name)
+        self.assertFalse(device.selectable)
+
+    def test_pretty_name_marks_generic_running_system(self) -> None:
+        device = BlockDevice(
+            path="/dev/nvme0n1",
+            size_bytes=512 * 1024**3,
+            size_label="512.0 GiB",
+            model="System Disk",
+            vendor="NVMe",
+            transport="nvme",
+            removable=False,
+            is_current_system_device=True,
+            disabled_reason="running system",
+        )
+
+        self.assertEqual(device.status_label, "Running system")
+        self.assertIn("[Running system]", device.pretty_name)
         self.assertFalse(device.selectable)
 
     def test_pretty_name_marks_attached_source_as_visible_but_not_selectable(self) -> None:
@@ -76,7 +94,7 @@ class BlockDeviceTests(unittest.TestCase):
             disabled_reason="attached source",
         )
 
-        self.assertIn("[attached source]", device.pretty_name)
+        self.assertIn("[Attached Tails source]", device.pretty_name)
         self.assertIn("[not selectable]", device.pretty_name)
         self.assertFalse(device.selectable)
 
