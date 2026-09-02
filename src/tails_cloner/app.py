@@ -29,6 +29,15 @@ from tails_cloner.controller import ApplicationController
 from tails_cloner.models import SourceMode
 from tails_cloner.network import fetch_text_torified, should_use_torify
 from tails_cloner.planner import OperationKind
+from tails_cloner.theme import (
+    configure_canvas_widget,
+    configure_combobox_popdown,
+    configure_listbox_widget,
+    configure_text_widget,
+    configure_tk_option_database,
+    configure_ttk_style,
+    palette_for,
+)
 from tails_cloner.verification import (
     parse_sha256_text,
     sha256_file,
@@ -207,14 +216,22 @@ class TailsClonerApp(tk.Tk):
         ttk.Label(
             info_row,
             text="Inofficial(!) Tails download/install/update tool. Refer to",
-            foreground="#555555",
+            style="Muted.TLabel",
         ).grid(row=0, column=0, sticky="w")
-        self.downloads_link_label = tk.Label(info_row, text="https://downloads.tails.net", cursor="hand2", fg="#4f8cff")
+        self.downloads_link_label = tk.Label(
+            info_row,
+            text="https://downloads.tails.net",
+            cursor="hand2",
+            takefocus=True,
+            highlightthickness=2,
+        )
         self.downloads_link_label.grid(row=0, column=1, sticky="w", padx=(4, 0))
-        self.downloads_link_label.bind("<Button-1>", lambda _e: webbrowser.open_new_tab("https://downloads.tails.net"))
+        self.downloads_link_label.bind("<Button-1>", self._open_downloads_link)
+        self.downloads_link_label.bind("<Return>", self._open_downloads_link)
+        self.downloads_link_label.bind("<space>", self._open_downloads_link)
         self.downloads_link_label.bind("<Enter>", self._on_link_enter)
         self.downloads_link_label.bind("<Leave>", self._on_link_leave)
-        ttk.Label(header, textvariable=self.remote_url_var, foreground="#666666").grid(row=2, column=0, sticky="w", pady=(4, 0))
+        ttk.Label(header, textvariable=self.remote_url_var, style="Muted.TLabel").grid(row=2, column=0, sticky="w", pady=(4, 0))
         self.refresh_versions_button = ttk.Button(
             header,
             text="Refresh Versions (Ctrl+R)",
@@ -227,9 +244,14 @@ class TailsClonerApp(tk.Tk):
             command=lambda: self._submit_background_if_idle(self.controller.refresh_devices),
         )
         self.refresh_devices_button.grid(row=0, column=2, padx=(8, 0))
-        self.theme_button = ttk.Button(header, text="☀" if self.dark_mode_var.get() else "🌙", width=3, command=self._on_toggle_dark_mode)
+        self.theme_button = ttk.Button(
+            header,
+            text="Light" if self.dark_mode_var.get() else "Dark",
+            width=6,
+            command=self._on_toggle_dark_mode,
+        )
         self.theme_button.grid(row=0, column=3, padx=(8, 0))
-        ttk.Button(header, text="✕", width=3, command=self._on_close).grid(row=0, column=4, padx=(8, 0))
+        ttk.Button(header, text="Close", width=6, command=self._on_close).grid(row=0, column=4, padx=(8, 0))
 
         notebook = ttk.Notebook(self)
         notebook.grid(row=1, column=0, sticky="nsew", padx=16, pady=(0, 8))
@@ -268,7 +290,7 @@ class TailsClonerApp(tk.Tk):
         ttk.Label(
             self.source_remote_frame,
             textvariable=self.source_status_var,
-            foreground="#666666",
+            style="Muted.TLabel",
             wraplength=520,
         ).grid(row=2, column=0, sticky="w", padx=(20, 0), pady=(2, 0))
 
@@ -285,14 +307,14 @@ class TailsClonerApp(tk.Tk):
             command=self._on_source_mode_changed
         )
         self.source_running_radio.grid(row=0, column=0, sticky="w", columnspan=2)
-        ttk.Label(self.running_tails_frame, text="Version:", foreground="#666666").grid(row=1, column=0, sticky="w", padx=(20, 4))
-        ttk.Label(self.running_tails_frame, textvariable=self.running_tails_version_var, foreground="#333333").grid(row=1, column=1, sticky="w")
-        ttk.Label(self.running_tails_frame, text="Device:", foreground="#666666").grid(row=2, column=0, sticky="w", padx=(20, 4))
-        ttk.Label(self.running_tails_frame, textvariable=self.running_tails_device_var, foreground="#333333").grid(row=2, column=1, sticky="w")
+        ttk.Label(self.running_tails_frame, text="Version:", style="Muted.TLabel").grid(row=1, column=0, sticky="w", padx=(20, 4))
+        ttk.Label(self.running_tails_frame, textvariable=self.running_tails_version_var, style="Value.TLabel").grid(row=1, column=1, sticky="w")
+        ttk.Label(self.running_tails_frame, text="Device:", style="Muted.TLabel").grid(row=2, column=0, sticky="w", padx=(20, 4))
+        ttk.Label(self.running_tails_frame, textvariable=self.running_tails_device_var, style="Value.TLabel").grid(row=2, column=1, sticky="w")
         ttk.Label(
             self.running_tails_frame,
             text="Boot newer Tails from USB, then upgrade another target device.",
-            foreground="#555555",
+            style="Muted.TLabel",
         ).grid(row=3, column=0, columnspan=2, sticky="w", padx=(20, 0), pady=(4, 0))
 
         # Attached live source option
@@ -307,10 +329,10 @@ class TailsClonerApp(tk.Tk):
             command=self._on_source_mode_changed,
         )
         self.source_attached_radio.grid(row=0, column=0, columnspan=3, sticky="w")
-        ttk.Label(self.source_attached_frame, text="Source device:", foreground="#666666").grid(row=1, column=0, sticky="w", padx=(20, 4), pady=(4, 0))
+        ttk.Label(self.source_attached_frame, text="Source device:", style="Muted.TLabel").grid(row=1, column=0, sticky="w", padx=(20, 4), pady=(4, 0))
         self.attached_source_device_entry = ttk.Entry(self.source_attached_frame, textvariable=self.attached_source_device_var)
         self.attached_source_device_entry.grid(row=1, column=1, sticky="ew", pady=(4, 0))
-        ttk.Label(self.source_attached_frame, text="Mount point:", foreground="#666666").grid(row=2, column=0, sticky="w", padx=(20, 4), pady=(4, 0))
+        ttk.Label(self.source_attached_frame, text="Mount point:", style="Muted.TLabel").grid(row=2, column=0, sticky="w", padx=(20, 4), pady=(4, 0))
         self.attached_source_mount_entry = ttk.Entry(self.source_attached_frame, textvariable=self.attached_source_mount_var)
         self.attached_source_mount_entry.grid(row=2, column=1, sticky="ew", pady=(4, 0))
         self.attached_source_validate_button = ttk.Button(
@@ -322,7 +344,7 @@ class TailsClonerApp(tk.Tk):
         ttk.Label(
             self.source_attached_frame,
             textvariable=self.attached_source_status_var,
-            foreground="#666666",
+            style="Muted.TLabel",
             wraplength=520,
         ).grid(row=3, column=0, columnspan=3, sticky="w", padx=(20, 0), pady=(4, 0))
 
@@ -352,12 +374,12 @@ class TailsClonerApp(tk.Tk):
         left.grid(row=1, column=0, sticky="nsew", padx=(0, 8), pady=(0, 8))
         left.columnconfigure(0, weight=1)
         left.rowconfigure(1, weight=1)
-        ttk.Label(left, textvariable=self.remote_source_info_var, foreground="#666666", justify="left").grid(row=0, column=0, sticky="w", pady=(0, 8))
+        ttk.Label(left, textvariable=self.remote_source_info_var, style="Muted.TLabel", justify="left").grid(row=0, column=0, sticky="w", pady=(0, 8))
 
         version_toolbar = ttk.Frame(left)
         version_toolbar.grid(row=1, column=0, sticky="ew")
         version_toolbar.columnconfigure(0, weight=1)
-        self.version_status_label = ttk.Label(version_toolbar, text="Idle", foreground="#666666")
+        self.version_status_label = ttk.Label(version_toolbar, text="Idle", style="Muted.TLabel")
         self.version_status_label.grid(row=0, column=0, sticky="w")
 
         self.versions_list = tk.Listbox(left, exportselection=False, activestyle="none", font=("TkDefaultFont", FONT_SIZE_MEDIUM))
@@ -435,7 +457,7 @@ class TailsClonerApp(tk.Tk):
         ttk.Label(
             self.boot_order_tab,
             textvariable=self.boot_loader_status_var,
-            foreground="#666666",
+            style="Muted.TLabel",
             wraplength=720,
             justify="left",
         ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(6, 0))
@@ -468,16 +490,16 @@ class TailsClonerApp(tk.Tk):
         self.device_combo.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(4, 0))
         self.device_combo.bind("<<ComboboxSelected>>", self._on_device_selected)
 
-        self.device_status_label = ttk.Label(right, text="Idle", foreground="#666666", wraplength=320)
+        self.device_status_label = ttk.Label(right, text="Idle", style="Muted.TLabel", wraplength=320)
         self.device_status_label.grid(row=4, column=0, columnspan=3, sticky="w", pady=(12, 0))
 
-        self.device_warning_label = ttk.Label(right, text="", foreground="#a63636", wraplength=320)
+        self.device_warning_label = ttk.Label(right, text="", style="Warning.TLabel", wraplength=320)
         self.device_warning_label.grid(row=5, column=0, columnspan=3, sticky="w", pady=(4, 0))
 
         self.upgrade_plan_label = ttk.Label(
             right,
             textvariable=self.upgrade_plan_var,
-            foreground="#1f4d8f",
+            style="Info.TLabel",
             wraplength=320,
             justify="left",
         )
@@ -489,7 +511,7 @@ class TailsClonerApp(tk.Tk):
         self.progress_frame.columnconfigure(0, weight=1)
         self.progress_bar = ttk.Progressbar(self.progress_frame, mode="indeterminate")
         self.progress_bar.grid(row=0, column=0, sticky="ew")
-        self.progress_label = ttk.Label(self.progress_frame, text="", foreground="#666666", wraplength=700)
+        self.progress_label = ttk.Label(self.progress_frame, text="", style="Muted.TLabel", wraplength=700)
         self.progress_label.grid(row=1, column=0, sticky="w", pady=(4, 0))
         progress_log_frame = ttk.Frame(self.progress_frame)
         progress_log_frame.grid(row=2, column=0, sticky="nsew", pady=(6, 0))
@@ -514,12 +536,18 @@ class TailsClonerApp(tk.Tk):
         self.progress_log.bind("<End>", lambda _event: self._scroll_progress_log_to(1.0))
         self.progress_frame.grid_remove()  # Hidden by default
 
-        self.clone_button = ttk.Button(right, text="Install", command=self._confirm_and_clone)
+        self.clone_button = ttk.Button(right, text="Install", style="Danger.TButton", command=self._confirm_and_clone)
         self.clone_button.grid(row=8, column=0, columnspan=3, sticky="ew", pady=(20, 0))
         # Make clone button the default (activated by Enter)
         self.clone_button.bind("<Return>", lambda _event: self._confirm_and_clone())
         warning_text = self._install_warning_text()
-        self.install_warning_label = ttk.Label(right, text=warning_text, wraplength=340, justify="left", foreground="#7a1f1f")
+        self.install_warning_label = ttk.Label(
+            right,
+            text=warning_text,
+            style="Warning.TLabel",
+            wraplength=340,
+            justify="left",
+        )
         self.install_warning_label.grid(row=9, column=0, columnspan=3, sticky="w", pady=(12, 0))
 
         ttk.Label(self, textvariable=self.status_var, relief="sunken", anchor="w", padding=(12, 8)).grid(
@@ -568,57 +596,25 @@ class TailsClonerApp(tk.Tk):
         style = ttk.Style(self)
         with suppress(tk.TclError):
             style.theme_use("clam")
+        palette = palette_for(dark_mode)
+        self.configure(bg=palette.background)
+        configure_ttk_style(style, palette)
+        configure_tk_option_database(self, palette)
 
-        if dark_mode:
-            bg = "#1a1d21"
-            fg = "#e8eaed"
-            entry_bg = "#262b31"
-            listbox_bg = "#252a31"
-            select_bg = "#3b6ea8"
-            active_bg = "#242a31"
-        else:
-            bg = "#f0f0f0"
-            fg = "#111111"
-            entry_bg = "#ffffff"
-            listbox_bg = "#ffffff"
-            select_bg = "#2f6db5"
-            active_bg = "#e3e8ee"
-
-        self.configure(bg=bg)
-        style.configure("TLabel", background=bg, foreground=fg)
-        style.configure("TFrame", background=bg)
-        style.configure("TLabelframe", background=bg, foreground=fg)
-        style.configure("TLabelframe.Label", background=bg, foreground=fg)
-        style.configure("TRadiobutton", background=bg, foreground=fg)
-        style.configure("TButton", padding=(10, 6))
-        style.configure("TEntry", fieldbackground=entry_bg, foreground=fg)
-        style.configure("TCombobox", fieldbackground=entry_bg, foreground=fg)
-        style.map("TRadiobutton", background=[("active", bg)], foreground=[("active", fg)])
-        style.map("TButton", background=[("active", active_bg)], foreground=[("active", fg)])
-        style.map("TEntry", fieldbackground=[("readonly", entry_bg)], foreground=[("readonly", fg)])
-
-        self.option_add("*Listbox.Background", listbox_bg)
-        self.option_add("*Listbox.Foreground", fg)
-        self.option_add("*Listbox.SelectBackground", select_bg)
-        self.option_add("*Listbox.SelectForeground", "#ffffff")
-        if hasattr(self, "versions_list"):
-            self.versions_list.configure(bg=listbox_bg, fg=fg, selectbackground=select_bg, selectforeground="#ffffff")
-        if hasattr(self, "boot_order_list"):
-            self.boot_order_list.configure(bg=listbox_bg, fg=fg, selectbackground=select_bg, selectforeground="#ffffff")
-        if hasattr(self, "theme_button"):
-            self.theme_button.config(text="☀" if dark_mode else "🌙")
-        if hasattr(self, "downloads_link_label"):
-            self.downloads_link_label.configure(bg=bg, fg="#7db0ff" if dark_mode else "#2f6db5")
-        for canvas, _content in getattr(self, "_scroll_regions", []):
-            canvas.configure(bg=bg)
-        if hasattr(self, "progress_log"):
-            self.progress_log.configure(
-                bg=listbox_bg,
-                fg=fg,
-                insertbackground=fg,
-                selectbackground=select_bg,
-                selectforeground="#ffffff",
-            )
+        if "versions_list" in self.__dict__:
+            configure_listbox_widget(self.versions_list, palette)
+        if "boot_order_list" in self.__dict__:
+            configure_listbox_widget(self.boot_order_list, palette)
+        if "theme_button" in self.__dict__:
+            self.theme_button.config(text="Light" if dark_mode else "Dark")
+        if "downloads_link_label" in self.__dict__:
+            self.downloads_link_label.configure(background=palette.background, foreground=palette.link)
+        if "device_combo" in self.__dict__:
+            configure_combobox_popdown(self.device_combo, palette)
+        for canvas, _content in self._scroll_regions:
+            configure_canvas_widget(canvas, palette)
+        if "progress_log" in self.__dict__:
+            configure_text_widget(self.progress_log, palette)
 
     def _on_toggle_dark_mode(self) -> None:
         self.dark_mode_var.set(not self.dark_mode_var.get())
@@ -640,12 +636,21 @@ class TailsClonerApp(tk.Tk):
         except tk.TclError:
             pass
 
+    def _open_downloads_link(self, _event: tk.Event | None = None) -> str:
+        webbrowser.open_new_tab("https://downloads.tails.net")
+        return "break"
+
     def _on_link_enter(self, _event: tk.Event | None = None) -> None:
-        self.downloads_link_label.configure(fg="#ffd166", font=("TkDefaultFont", FONT_SIZE_MEDIUM, "underline"))
+        palette = palette_for(self.dark_mode_var.get())
+        self.downloads_link_label.configure(
+            foreground=palette.link_hover,
+            font=("TkDefaultFont", FONT_SIZE_MEDIUM, "underline"),
+        )
 
     def _on_link_leave(self, _event: tk.Event | None = None) -> None:
+        palette = palette_for(self.dark_mode_var.get())
         self.downloads_link_label.configure(
-            fg="#7db0ff" if self.dark_mode_var.get() else "#2f6db5",
+            foreground=palette.link,
             font=("TkDefaultFont", FONT_SIZE_MEDIUM),
         )
 
@@ -902,9 +907,13 @@ class TailsClonerApp(tk.Tk):
 
     def _on_action_mode_changed(self) -> None:
         if self._upgrade_mode_enabled():
-            self.install_warning_label.config(text=self._upgrade_warning_text(), foreground="#2e7d32")
+            self.install_warning_label.config(text=self._upgrade_warning_text(), style="Success.TLabel")
+            if "clone_button" in self.__dict__:
+                self.clone_button.config(style="Accent.TButton")
         else:
-            self.install_warning_label.config(text=self._install_warning_text(), foreground="#7a1f1f")
+            self.install_warning_label.config(text=self._install_warning_text(), style="Warning.TLabel")
+            if "clone_button" in self.__dict__:
+                self.clone_button.config(style="Danger.TButton")
         self._sync_devices()
         self._update_device_warnings_and_button()
         self._sync_upgrade_plan()
@@ -1552,8 +1561,15 @@ class TailsClonerApp(tk.Tk):
         messages = plan.blocking_errors + plan.warnings
         self.device_warning_label.config(text="\n".join(messages))
         self.clone_button.config(text=plan.action_label, state="normal" if plan.would_write else "disabled")
-        foreground = plan.status_foreground or "#2e7d32"
-        self.device_status_label.config(text=plan.status_message, foreground=foreground)
+        if plan.blocking_errors or plan.warnings:
+            status_style = "Warning.TLabel"
+        elif operation == OperationKind.UPGRADE:
+            status_style = "Success.TLabel"
+        elif plan.target.has_tails:
+            status_style = "Warning.TLabel"
+        else:
+            status_style = "Success.TLabel"
+        self.device_status_label.config(text=plan.status_message, style=status_style)
 
     def _sync_selected_version_fields(self) -> None:
         version = self.controller.state.selected_version
@@ -1571,9 +1587,9 @@ class TailsClonerApp(tk.Tk):
         version_label = "Refreshing remote versions…" if self.controller.state.versions_loading else "Remote versions idle"
         self.version_status_label.config(text=version_label)
         if self.controller.state.devices_loading:
-            self.device_status_label.config(text="Scanning devices…", foreground="#666666")
+            self.device_status_label.config(text="Scanning devices…", style="Muted.TLabel")
         elif not self.controller.state.devices:
-            self.device_status_label.config(text="No devices detected.", foreground="#666666")
+            self.device_status_label.config(text="No devices detected.", style="Muted.TLabel")
 
     def _sync_upgrade_plan(self) -> None:
         selected_name = self.device_var.get().strip()

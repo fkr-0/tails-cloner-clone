@@ -134,6 +134,28 @@ class AppWindowClassTests(unittest.TestCase):
         self.assertIn("info_row = ttk.Frame(header)", build_source)
         self.assertNotIn("padx=(370, 0)", build_source)
 
+    def test_theme_application_uses_central_palette_for_native_and_ttk_widgets(self) -> None:
+        theme_source = inspect.getsource(TailsClonerApp._apply_theme)
+
+        self.assertIn("configure_ttk_style(style, palette)", theme_source)
+        self.assertIn("configure_tk_option_database(self, palette)", theme_source)
+        self.assertIn("configure_listbox_widget(self.versions_list, palette)", theme_source)
+        self.assertIn("configure_combobox_popdown(self.device_combo, palette)", theme_source)
+        self.assertIn("configure_canvas_widget(canvas, palette)", theme_source)
+        self.assertIn("configure_text_widget(self.progress_log, palette)", theme_source)
+
+    def test_app_does_not_reintroduce_scattered_hex_widget_colors(self) -> None:
+        app_source = inspect.getsource(TailsClonerApp)
+
+        self.assertNotRegex(app_source, r"#[0-9A-Fa-f]{6}")
+
+    def test_download_link_is_keyboard_activatable(self) -> None:
+        build_source = inspect.getsource(TailsClonerApp._build_ui)
+
+        self.assertIn('takefocus=True', build_source)
+        self.assertIn('bind("<Return>", self._open_downloads_link)', build_source)
+        self.assertIn('bind("<space>", self._open_downloads_link)', build_source)
+
     def test_progress_log_autofollows_while_user_is_at_bottom(self) -> None:
         app = TailsClonerApp.__new__(TailsClonerApp)
         app.progress_label = _FakeLabel()
@@ -210,6 +232,7 @@ class AppWindowClassTests(unittest.TestCase):
         app = TailsClonerApp.__new__(TailsClonerApp)
         app.action_mode_var = _FakeStringVar("upgrade")
         app.install_warning_label = _FakeLabel()
+        app.clone_button = _FakeLabel()
         app._last_devices_snapshot = ()
         app.controller = type(
             "Controller",
@@ -228,7 +251,8 @@ class AppWindowClassTests(unittest.TestCase):
         app._on_action_mode_changed()
 
         self.assertIn("Persistent Storage, if present, is kept intact", app.install_warning_label.kwargs["text"])
-        self.assertEqual(app.install_warning_label.kwargs["foreground"], "#2e7d32")
+        self.assertEqual(app.install_warning_label.kwargs["style"], "Success.TLabel")
+        self.assertEqual(app.clone_button.kwargs["style"], "Accent.TButton")
 
     def test_running_source_option_stays_enabled_after_switching_to_local_mode(self) -> None:
         app = TailsClonerApp.__new__(TailsClonerApp)
