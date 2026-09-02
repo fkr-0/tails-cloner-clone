@@ -49,6 +49,28 @@ def test_dry_run_capture_uses_usb_boot_and_is_not_e2e_pass(tmp_path, monkeypatch
     assert "TAILS_CLONER_APPIMAGE_SMOKE" not in result
 
 
+def test_prepare_share_normalizes_relative_appimage_path(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    appimage = Path("candidate.AppImage")
+    seen: list[str] = []
+
+    def fake_run(command, **_kwargs):
+        seen.extend(command)
+        return None
+
+    monkeypatch.setattr(capture.subprocess, "run", fake_run)
+
+    capture.prepare_share(
+        tmp_path / "share",
+        appimage=appimage,
+        share_tag="tcapp",
+        mount_point="/mnt/tcapp",
+    )
+
+    appimage_index = seen.index("--appimage")
+    assert seen[appimage_index + 1] == str((tmp_path / appimage).resolve())
+
+
 def test_capture_lock_refuses_parallel_or_stale_lock(tmp_path) -> None:
     lock = tmp_path / "capture.lock"
     lock.write_text("pid=123\n", encoding="utf-8")

@@ -7,7 +7,7 @@ from enum import Enum
 class SourceMode(Enum):
     """Source mode for cloning."""
 
-    RUNNING = "running"  # Clone from running Tails system
+    RUNNING = "running"  # Use the running Tails medium as an upgrade source
     ATTACHED = "attached"  # Use an attached/mounted Tails live source
     LOCAL = "local"  # Use local ISO/IMG file
     REMOTE = "remote"  # Download remote version
@@ -47,6 +47,10 @@ class BlockDevice:
     vendor: str
     transport: str
     removable: bool
+    serial: str = ""
+    wwn: str = ""
+    major_minor: str = ""
+    stable_path: str = ""
     read_only: bool = False
     # Device properties for upgrade detection
     fstype: str = ""
@@ -65,6 +69,8 @@ class BlockDevice:
     def pretty_name(self) -> str:
         vendor = self.vendor.strip() or "Unknown vendor"
         model = self.model.strip() or "Unknown model"
+        identity = self.serial.strip() or self.wwn.strip()
+        identity_indicator = f" · ID {identity}" if identity else ""
         removable_indicator = " (removable)" if self.removable else ""
         read_only_indicator = " (read-only)" if self.read_only else ""
         tails_indicator = " [Tails installed]" if self.has_tails else ""
@@ -73,10 +79,41 @@ class BlockDevice:
         source_indicator = " [attached source]" if self.is_attached_source_device else ""
         disabled_indicator = " [not selectable]" if self.disabled_reason else ""
         return (
-            f"{self.path} · {self.size_label} · {vendor} {model}"
+            f"{self.path} · {self.size_label} · {vendor} {model}{identity_indicator}"
             f"{removable_indicator}{read_only_indicator}{tails_indicator}{running_indicator}"
             f"{host_indicator}{source_indicator}{disabled_indicator}"
         ).strip()
+
+    @property
+    def identity_key(self) -> tuple[str, ...]:
+        """Return the strongest available hardware identity for hot-swap checks."""
+        wwn = self.wwn.strip().casefold()
+        if wwn:
+            return ("wwn", wwn)
+
+        serial = self.serial.strip().casefold()
+        if serial:
+            return (
+                "serial",
+                serial,
+                self.vendor.strip().casefold(),
+                self.model.strip().casefold(),
+            )
+
+        stable_path = self.stable_path.strip()
+        if stable_path:
+            return ("by-id", stable_path)
+
+        # Some inexpensive flash drives expose neither WWN nor serial. This
+        # fallback cannot distinguish two truly identical devices, but still
+        # detects the common case where a different drive reuses the same path.
+        return (
+            "fallback",
+            str(self.size_bytes),
+            self.vendor.strip().casefold(),
+            self.model.strip().casefold(),
+            self.transport.strip().casefold(),
+        )
 
     @property
     def selectable(self) -> bool:
@@ -96,6 +133,9 @@ class AppState:
     selected_checksum_url: str = ""
     verified_image_path: str = ""
     verified_image_sha256: str = ""
+    verified_image_version: str = ""
+    verified_image_source_url: str = ""
+    verified_image_signing_fingerprint: str = ""
     versions_loading: bool = False
     devices_loading: bool = False
     last_clone_progress: str = ""

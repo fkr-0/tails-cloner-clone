@@ -191,15 +191,26 @@ class ApplicationController:
             else:
                 device.disabled_reason = ""
 
-    def _find_target_device(self, device_path: str) -> BlockDevice:
+    @staticmethod
+    def _find_device_in(devices: list[BlockDevice], device_path: str) -> BlockDevice | None:
         target_parent = get_parent_disk_path(device_path)
+        for device in devices:
+            if device.path == device_path or device.path == target_parent:
+                return device
+        return None
+
+    def _find_target_device(self, device_path: str) -> BlockDevice:
         if not self.state.devices:
             self.refresh_devices()
         self.annotate_device_selection_state()
-        for device in self.state.devices:
-            if device.path == device_path or device.path == target_parent:
-                return device
+        device = self._find_device_in(self.state.devices, device_path)
+        if device is not None:
+            return device
         raise RuntimeError(f"Target device is not present in the current device list: {device_path}")
+
+    @staticmethod
+    def _write_device_path(device: BlockDevice) -> str:
+        return device.stable_path or device.path
 
     @staticmethod
     def _local_image_size(image_path: str) -> int:
@@ -229,10 +240,23 @@ class ApplicationController:
                 version=self.state.selected_version,
             )
         local_path = image_path or ""
+        verified = False
+        if local_path and self.state.verified_image_path and self.state.verified_image_sha256:
+            try:
+                verified = Path(local_path).resolve() == Path(self.state.verified_image_path).resolve()
+            except OSError:
+                verified = False
         return OperationSource(
             type="image",
             path=local_path,
             size_bytes=self._local_image_size(local_path) if local_path else 0,
+            verified=verified,
+            sha256=self.state.verified_image_sha256 if verified else "",
+            version=self.state.verified_image_version if verified else "",
+            origin_url=self.state.verified_image_source_url if verified else "",
+            signing_fingerprint=(
+                self.state.verified_image_signing_fingerprint if verified else ""
+            ),
         )
 
     def plan_target_operation(self, operation: OperationKind, device_path: str, image_path: str | None = None) -> OperationPlan:
@@ -244,10 +268,64 @@ class ApplicationController:
         )
 
     def _require_valid_target_plan(self, operation: OperationKind, device_path: str, image_path: str | None = None) -> OperationPlan:
-        plan = self.plan_target_operation(operation, device_path, image_path)
-        if plan.blocking_errors:
-            raise RuntimeError("\n".join(plan.blocking_errors))
-        return plan
+        initial_plan = self.plan_target_operation(operation, device_path, image_path)
+        if initial_plan.blocking_errors:
+            raise RuntimeError("\n".join(initial_plan.blocking_errors))
+
+        source_path = ""
+        if self.state.source_mode == SourceMode.RUNNING:
+            source_path = self.state.running_tails_device
+        elif self.state.source_mode == SourceMode.ATTACHED:
+            source_path = self.state.attached_live_source_device
+        initial_source = self._find_device_in(self.state.devices, source_path) if source_path else None
+
+        # Re-enumerate immediately before crossing the destructive-operation
+        # boundary. Device node names can be reused after a USB unplug/replug;
+        # compare stable hardware identity instead of trusting /dev/sdX alone.
+        try:
+            fresh_devices = self.device_service.list_devices()
+        except Exception as error:  # noqa: BLE001 - converted into a safe refusal
+            raise RuntimeError(f"Could not revalidate target device immediately before writing: {error}") from error
+
+        self.state.devices = fresh_devices
+        self.annotate_device_selection_state()
+        fresh_target = self._find_device_in(self.state.devices, device_path)
+        if fresh_target is None:
+            raise RuntimeError(
+                f"Target device disappeared before the write started: {device_path}. Reselect it and confirm again."
+            )
+        if initial_plan.target.identity_key != fresh_target.identity_key:
+            raise RuntimeError(
+                f"Target device identity changed before the write started at {device_path}. "
+                "The device may have been unplugged or replaced; reselect it and confirm again."
+            )
+
+        if source_path and initial_source is None:
+            raise RuntimeError(
+                f"Source device was not present in the confirmed device list: {source_path}. Refresh and validate it again."
+            )
+
+        if source_path:
+            fresh_source = self._find_device_in(self.state.devices, source_path)
+            if fresh_source is None:
+                raise RuntimeError(
+                    f"Source device disappeared before the upgrade started: {source_path}. "
+                    "Reconnect and validate it again."
+                )
+            if initial_source is not None and initial_source.identity_key != fresh_source.identity_key:
+                raise RuntimeError(
+                    f"Source device identity changed before the upgrade started at {source_path}. "
+                    "Reconnect and validate it again."
+                )
+
+        fresh_plan = plan_operation(
+            operation=operation,
+            source=self._operation_source(image_path),
+            target=fresh_target,
+        )
+        if fresh_plan.blocking_errors:
+            raise RuntimeError("\n".join(fresh_plan.blocking_errors))
+        return fresh_plan
 
     def shutdown(self) -> None:
         shutdown = getattr(self.executor, "shutdown", None)
@@ -326,19 +404,8 @@ class ApplicationController:
             ) from error
 
     def _resolve_source_image_path(self, image_path: str | None, operation_name: str) -> str:
-        """Resolve the image used for install/reinstall/upgrade operations."""
+        """Resolve a local IMG/ISO path used for image-backed operations."""
         actual_image_path = image_path
-
-        if self.state.source_mode == SourceMode.RUNNING and actual_image_path is None:
-            from tails_cloner.source import RunningLiveSystemSource
-            source = RunningLiveSystemSource()
-            iso_path = source.get_iso_path()
-            if iso_path and iso_path.exists():
-                actual_image_path = str(iso_path)
-                self.state.status_message = "Using embedded Tails ISO from running system..."
-            else:
-                self.state.status_message = "Error: Tails ISO not found in running system."
-                raise RuntimeError("Tails ISO not found in running system at /lib/live/mount/medium/live/Tails.iso")
 
         if actual_image_path is None:
             self.state.status_message = "Error: No image path specified."
@@ -356,8 +423,14 @@ class ApplicationController:
         """Install or reinstall an image to the target device with a whole-device write."""
         if self.state.source_mode == SourceMode.ATTACHED:
             raise RuntimeError("Attached live sources are only supported for persistence-preserving upgrades.")
-        self._require_valid_target_plan(OperationKind.INSTALL, device_path, image_path)
+        if self.state.source_mode == SourceMode.RUNNING:
+            raise RuntimeError(
+                "The running Tails medium is supported only as an upgrade source. "
+                "Choose a verified Tails IMG for install or reinstall."
+            )
+        plan = self._require_valid_target_plan(OperationKind.INSTALL, device_path, image_path)
         actual_image_path = self._resolve_source_image_path(image_path, "installing")
+        write_device_path = self._write_device_path(plan.target)
         self.state.status_message = f"Installing {actual_image_path} to {device_path}…"
 
         def on_progress(message: str) -> None:
@@ -368,7 +441,7 @@ class ApplicationController:
 
         self.clone_service.clone_image(
             image_path=actual_image_path,
-            device_path=device_path,
+            device_path=write_device_path,
             progress_callback=on_progress,
             post_write_options=self.state.post_write_options,
         )
@@ -388,8 +461,9 @@ class ApplicationController:
             self.upgrade_selected_from_running_live_source(device_path, progress_callback=progress_callback)
             return
 
-        self._require_valid_target_plan(OperationKind.UPGRADE, device_path, image_path)
+        plan = self._require_valid_target_plan(OperationKind.UPGRADE, device_path, image_path)
         actual_image_path = self._resolve_source_image_path(image_path, "upgrading")
+        write_device_path = self._write_device_path(plan.target)
         self.state.status_message = (
             f"Upgrading {device_path} from {actual_image_path}; existing Persistent Storage, if present, will be preserved…"
         )
@@ -402,7 +476,7 @@ class ApplicationController:
 
         self.clone_service.upgrade_image(
             image_path=actual_image_path,
-            device_path=device_path,
+            device_path=write_device_path,
             progress_callback=on_progress,
         )
         self.state.status_message = "Upgrade completed successfully. Existing Persistent Storage, if present, was preserved."
@@ -415,9 +489,13 @@ class ApplicationController:
         """Upgrade from the live medium currently running this Tails session."""
         if not self.state.running_tails_device:
             raise RuntimeError("The running Tails source device could not be determined.")
-        self._require_valid_target_plan(OperationKind.UPGRADE, device_path)
+        plan = self._require_valid_target_plan(OperationKind.UPGRADE, device_path)
 
-        source_device = get_parent_disk_path(self.state.running_tails_device)
+        source = self._find_device_in(self.state.devices, self.state.running_tails_device)
+        if source is None:
+            raise RuntimeError("The running Tails source device disappeared before the upgrade started.")
+        source_device = self._write_device_path(source)
+        write_device_path = self._write_device_path(plan.target)
         self.state.status_message = (
             f"Upgrading {device_path} from running Tails source {source_device}; "
             "existing Persistent Storage, if present, will be preserved…"
@@ -431,7 +509,7 @@ class ApplicationController:
 
         self.clone_service.upgrade_from_device(
             source_device=source_device,
-            device_path=device_path,
+            device_path=write_device_path,
             progress_callback=on_progress,
         )
         self.state.status_message = (
@@ -447,9 +525,13 @@ class ApplicationController:
         """Upgrade from an attached live source device without rewriting target persistence."""
         if not self.state.attached_live_source_device:
             raise RuntimeError("No attached Tails live source has been selected.")
-        self._require_valid_target_plan(OperationKind.UPGRADE, device_path)
+        plan = self._require_valid_target_plan(OperationKind.UPGRADE, device_path)
 
-        source_device = get_parent_disk_path(self.state.attached_live_source_device)
+        source = self._find_device_in(self.state.devices, self.state.attached_live_source_device)
+        if source is None:
+            raise RuntimeError("The attached Tails source device disappeared before the upgrade started.")
+        source_device = self._write_device_path(source)
+        write_device_path = self._write_device_path(plan.target)
         self.state.status_message = (
             f"Upgrading {device_path} from attached Tails live source {source_device}; "
             "existing Persistent Storage, if present, will be preserved…"
@@ -463,7 +545,7 @@ class ApplicationController:
 
         self.clone_service.upgrade_from_device(
             source_device=source_device,
-            device_path=device_path,
+            device_path=write_device_path,
             progress_callback=on_progress,
         )
         self.state.status_message = (

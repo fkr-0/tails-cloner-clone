@@ -28,7 +28,7 @@ def test_install_plan_allows_plain_selectable_target() -> None:
     assert plan.would_write is True
     assert plan.action_label == "Install"
     assert plan.blocking_errors == []
-    assert plan.warnings == []
+    assert any("not been cryptographically verified" in warning for warning in plan.warnings)
 
 
 def test_install_plan_rejects_image_larger_than_target() -> None:
@@ -47,6 +47,32 @@ def test_install_plan_requires_a_selected_local_image() -> None:
 
     assert plan.would_write is False
     assert plan.blocking_errors == ["Choose a local ISO or IMG file before starting a write operation."]
+
+
+def test_local_unverified_image_is_allowed_with_explicit_warning() -> None:
+    plan = plan_operation(
+        OperationKind.INSTALL,
+        OperationSource(type="image", path="/tmp/tails.img"),
+        device(),
+    )
+
+    assert plan.would_write is True
+    assert any("not been cryptographically verified" in warning for warning in plan.warnings)
+
+
+def test_verified_download_source_label_retains_version_and_filename() -> None:
+    plan = plan_operation(
+        OperationKind.INSTALL,
+        OperationSource(
+            type="image",
+            path="/tmp/tails-amd64-7.7.2.img",
+            version="7.7.2",
+            verified=True,
+        ),
+        device(),
+    )
+
+    assert plan.source_label == "verified downloaded Tails 7.7.2 (tails-amd64-7.7.2.img)"
 
 
 def test_remote_source_must_be_downloaded_before_write() -> None:
@@ -93,7 +119,8 @@ def test_install_plan_warns_for_existing_tails_reinstall() -> None:
 
     assert plan.would_write is True
     assert plan.action_label == "Reinstall (delete all data)"
-    assert plan.warnings == ["target already contains Tails; install would reinstall and may remove Persistent Storage"]
+    assert any("target already contains Tails" in warning for warning in plan.warnings)
+    assert any("not been cryptographically verified" in warning for warning in plan.warnings)
 
 
 def test_upgrade_plan_requires_existing_tails() -> None:
@@ -118,7 +145,27 @@ def test_plan_warns_for_non_removable_target() -> None:
     plan = plan_operation(OperationKind.INSTALL, source(), device(removable=False))
 
     assert plan.would_write is True
-    assert plan.warnings == ["target is not reported as removable; verify that this is intentional"]
+    assert any("not reported as removable" in warning for warning in plan.warnings)
+    assert any("not been cryptographically verified" in warning for warning in plan.warnings)
+
+
+def test_confirmation_exposes_stable_target_identity_and_internal_status() -> None:
+    target = device(removable=False)
+    target.serial = "SERIAL-123"
+    target.stable_path = "/dev/disk/by-id/ata-example"
+
+    plan = plan_operation(OperationKind.INSTALL, source(), target)
+
+    assert "serial SERIAL-123" in plan.target_label
+    assert "internal/non-removable" in plan.target_label
+    assert "serial SERIAL-123" in plan.confirmation_message
+
+
+def test_plan_warns_when_no_stable_hardware_identity_is_reported() -> None:
+    plan = plan_operation(OperationKind.INSTALL, source(), device())
+
+    assert any("no stable hardware identifier" in warning for warning in plan.warnings)
+    assert "no stable hardware ID reported" in plan.confirmation_message
 
 
 def test_install_confirmation_copy_is_device_neutral() -> None:

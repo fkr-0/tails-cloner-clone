@@ -17,7 +17,8 @@ InspectRun = Callable[..., subprocess.CompletedProcess[str]]
 TargetPreparer = Callable[[str, int, RunCloneCommand, Callable[[str], None]], None]
 
 TARGET_LSBLK_COLUMNS = "PATH,NAME,TYPE,FSTYPE,MOUNTPOINTS,RO,SIZE"
-SYSTEM_MOUNTPOINTS = {"/", "/boot", "/boot/efi", "/usr", "/var"}
+SYSTEM_MOUNTPOINTS = {"/", "/boot", "/boot/efi", "/home", "/usr", "/var"}
+PROTECTED_LIVE_MOUNT_PREFIXES = ("/lib/live/mount", "/run/live")
 
 
 def build_clone_command(image_path: str | Path, device_path: str, use_pkexec: bool = True) -> list[str]:
@@ -111,6 +112,10 @@ def inspect_target_deactivation_commands(
             for node in descendants
             for mountpoint in _mountpoints(node.get("mountpoints"))
             if mountpoint in SYSTEM_MOUNTPOINTS
+            or any(
+                mountpoint == prefix or mountpoint.startswith(f"{prefix}/")
+                for prefix in PROTECTED_LIVE_MOUNT_PREFIXES
+            )
         }
     )
     if active_system_mounts:

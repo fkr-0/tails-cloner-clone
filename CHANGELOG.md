@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.5.3 - 2026-09-02
+
+### Safety and Upgrade Hardening
+
+- Revalidate source and target hardware identity immediately before destructive operations, prefer stable `/dev/disk/by-id` paths, and show the selected hardware identity in confirmation prompts.
+- Protect the running/system disk at both discovery and write boundaries, including `/home` and Tails live-media mount paths, while keeping intentional internal-disk targets supported with explicit warnings and confirmation.
+- Preserve Tails persistence during upgrades by writing only the system partition and validating that the persistence partition remains unchanged.
+- Require HTTPS for remote release assets, verify downloaded images with SHA256 plus the pinned Tails OpenPGP identity, and re-check verified image hashes immediately before writing.
+- Refresh the bundled Tails public signing key and package it into the AppImage.
+
+### Release and Qualification
+
+- Converge package/application metadata on version `0.5.3` and update user-visible copy to reflect explicit block-device targeting rather than removable-only behavior.
+- Run the GitHub release gate with pytest, Ruff, and mypy instead of the narrower unittest-only discovery path.
+- Make the AppImage build script directly executable, matching the release workflow invocation, and fix release-candidate AppImage path handling in the Tails real-boot smoke helper.
+
 ## v0.5.0 - 2026-05-06
 
 ### Experimental Features

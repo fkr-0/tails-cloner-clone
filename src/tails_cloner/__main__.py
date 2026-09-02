@@ -69,7 +69,7 @@ class CloneService:
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Standalone GUI app for cloning Tails images onto removable devices.")
+    parser = argparse.ArgumentParser(description="Standalone GUI app for safely installing or upgrading Tails on explicitly selected block devices.")
     parser.add_argument(
         "--remote-index-url",
         default=os.environ.get("TAILS_REMOTE_INDEX_URL", DEFAULT_REMOTE_INDEX_URL),

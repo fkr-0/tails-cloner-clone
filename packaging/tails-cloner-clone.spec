@@ -22,6 +22,7 @@ a = Analysis(
         (str(ROOT / "assets" / "tails-cloner-clone-128.png"), "assets"),
         (str(ROOT / "assets" / "tails-cloner-clone-256.png"), "assets"),
         (str(ROOT / "assets" / "tails-cloner-clone-512.png"), "assets"),
+        (str(ROOT / "assets" / "tails-signing-minimal.key"), "assets"),
     ],
     hiddenimports=[],
     hookspath=[],

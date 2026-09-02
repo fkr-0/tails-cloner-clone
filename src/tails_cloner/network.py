@@ -4,7 +4,6 @@ import shutil
 import socket
 import ssl
 import subprocess
-from urllib.error import URLError
 from urllib.request import urlopen
 
 TOR_SOCKS_HOST = "127.0.0.1"
@@ -54,15 +53,3 @@ def fetch_text_torified(url: str, timeout_seconds: int) -> str:
         capture_output=True,
     )
     return result.stdout
-
-
-def is_cert_verification_error(error: Exception) -> bool:
-    if isinstance(error, ssl.SSLCertVerificationError):
-        return True
-    if isinstance(error, URLError):
-        reason = getattr(error, "reason", None)
-        if isinstance(reason, ssl.SSLCertVerificationError):
-            return True
-        if isinstance(reason, str) and "CERTIFICATE_VERIFY_FAILED" in reason:
-            return True
-    return "CERTIFICATE_VERIFY_FAILED" in str(error)

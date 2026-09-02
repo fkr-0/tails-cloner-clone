@@ -76,6 +76,15 @@ class FakeRunner:
             return [_part("/dev/sdf1", fstype="vfat", label="Tails", size=8 * GIB)]
         if device == "/dev/sdg":
             return [_part("/dev/sdg1", fstype="vfat", label="Tails", read_only=True)]
+        if device == "/dev/sdh":
+            return [
+                _part(
+                    "/dev/sdh1",
+                    fstype="vfat",
+                    label="Tails",
+                    mountpoints=["/lib/live/mount/medium"],
+                )
+            ]
         return []
 
     def __call__(self, command: list[str]) -> subprocess.CompletedProcess[str]:
@@ -201,6 +210,15 @@ def test_upgrade_rejects_read_only_target_partition() -> None:
 
     with pytest.raises(RuntimeError, match="read-only"):
         upgrade_tails_system_partition_from_device("/dev/sdc", "/dev/sdg", runner=runner)
+
+
+def test_upgrade_rejects_target_partition_used_by_running_live_system() -> None:
+    runner = FakeRunner()
+
+    with pytest.raises(RuntimeError, match="currently running operating system"):
+        upgrade_tails_system_partition_from_device("/dev/sdc", "/dev/sdh", runner=runner)
+
+    assert not any(command[:1] in (["umount"], ["dd"]) for command in runner.commands)
 
 
 def test_upgrade_from_device_rejects_same_source_and_target() -> None:

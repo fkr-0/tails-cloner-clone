@@ -71,6 +71,40 @@ class FakeDeviceService:
         return self.list_devices()
 
 
+class ReplacedTargetDeviceService(FakeDeviceService):
+    def list_devices(self):
+        devices = super().list_devices()
+        devices[0].serial = "replacement-device"
+        return devices
+
+
+class MissingTargetDeviceService(FakeDeviceService):
+    def list_devices(self):
+        return [device for device in super().list_devices() if device.path != "/dev/sdb"]
+
+
+class StablePathDeviceService(FakeDeviceService):
+    def list_devices(self):
+        devices = super().list_devices()
+        devices[0].stable_path = "/dev/disk/by-id/usb-target"
+        return devices
+
+
+class ReplacedSourceDeviceService(FakeDeviceService):
+    def list_devices(self):
+        devices = super().list_devices()
+        devices[0].serial = "replacement-source"
+        return devices
+
+
+class StableUpgradeDeviceService(FakeDeviceService):
+    def list_devices(self):
+        devices = super().list_devices()
+        devices[0].stable_path = "/dev/disk/by-id/usb-source"
+        devices[1].stable_path = "/dev/disk/by-id/usb-target"
+        return devices
+
+
 class FakeCloneService:
     def __init__(self):
         self.calls = []
@@ -167,6 +201,71 @@ class ControllerTests(unittest.TestCase):
         self.assertIsNotNone(clone_service.calls[0][2])
         self.assertEqual(controller.state.status_message, "Installation completed successfully.")
         self.assertEqual(controller.state.last_clone_progress, "done")
+
+    def test_write_rejects_reused_device_path_with_changed_hardware_identity(self) -> None:
+        clone_service = FakeCloneService()
+        state = AppState(
+            devices=[
+                BlockDevice(
+                    path="/dev/sdb",
+                    size_bytes=16008609792,
+                    size_label="14.9 GiB",
+                    model="USB DISK",
+                    vendor="SanDisk",
+                    transport="usb",
+                    removable=True,
+                    serial="original-device",
+                    has_tails=True,
+                )
+            ]
+        )
+        controller = ApplicationController(
+            state=state,
+            version_service=FakeVersionService(),
+            device_service=ReplacedTargetDeviceService(),
+            clone_service=clone_service,
+            executor=ThreadPoolExecutor(max_workers=1),
+        )
+        self.addCleanup(controller.shutdown)
+
+        with self.assertRaisesRegex(RuntimeError, "Target device identity changed"):
+            controller.clone_selected_image("/tmp/tails.img", "/dev/sdb")
+
+        self.assertEqual(clone_service.calls, [])
+
+    def test_write_uses_stable_by_id_target_alias_when_available(self) -> None:
+        clone_service = FakeCloneService()
+        device_service = StablePathDeviceService()
+        state = AppState(devices=device_service.list_devices())
+        controller = ApplicationController(
+            state=state,
+            version_service=FakeVersionService(),
+            device_service=device_service,
+            clone_service=clone_service,
+            executor=ThreadPoolExecutor(max_workers=1),
+        )
+        self.addCleanup(controller.shutdown)
+
+        controller.clone_selected_image("/tmp/tails.img", "/dev/sdb")
+
+        self.assertEqual(clone_service.calls[0][1], "/dev/disk/by-id/usb-target")
+
+    def test_write_rejects_target_that_disappeared_after_confirmation(self) -> None:
+        clone_service = FakeCloneService()
+        state = AppState(devices=FakeDeviceService().list_devices())
+        controller = ApplicationController(
+            state=state,
+            version_service=FakeVersionService(),
+            device_service=MissingTargetDeviceService(),
+            clone_service=clone_service,
+            executor=ThreadPoolExecutor(max_workers=1),
+        )
+        self.addCleanup(controller.shutdown)
+
+        with self.assertRaisesRegex(RuntimeError, "Target device disappeared"):
+            controller.clone_selected_image("/tmp/tails.img", "/dev/sdb")
+
+        self.assertEqual(clone_service.calls, [])
 
     def test_verified_download_is_rechecked_immediately_before_install(self) -> None:
         clone_service = FakeCloneService()
@@ -401,6 +500,83 @@ class ControllerTests(unittest.TestCase):
             controller.state.status_message,
             "Upgrade completed successfully from attached live source. Existing Persistent Storage, if present, was preserved.",
         )
+
+    def test_attached_upgrade_rejects_changed_source_identity(self) -> None:
+        clone_service = FakeCloneService()
+        devices = FakeDeviceService().list_devices()
+        devices[0].serial = "original-source"
+        state = AppState(
+            devices=devices,
+            source_mode=SourceMode.ATTACHED,
+            attached_live_source_device="/dev/sdb1",
+            attached_live_source_mount="/mnt/source",
+            attached_live_source_version="7.7.2",
+        )
+        controller = ApplicationController(
+            state=state,
+            version_service=FakeVersionService(),
+            device_service=ReplacedSourceDeviceService(),
+            clone_service=clone_service,
+            executor=ThreadPoolExecutor(max_workers=1),
+        )
+        self.addCleanup(controller.shutdown)
+
+        with self.assertRaisesRegex(RuntimeError, "Source device identity changed"):
+            controller.upgrade_selected_image(None, "/dev/sdc")
+
+        self.assertEqual(clone_service.upgrade_from_device_calls, [])
+
+    def test_attached_upgrade_uses_stable_source_and_target_aliases(self) -> None:
+        clone_service = FakeCloneService()
+        device_service = StableUpgradeDeviceService()
+        state = AppState(
+            devices=device_service.list_devices(),
+            source_mode=SourceMode.ATTACHED,
+            attached_live_source_device="/dev/sdb1",
+            attached_live_source_mount="/mnt/source",
+            attached_live_source_version="7.7.2",
+        )
+        controller = ApplicationController(
+            state=state,
+            version_service=FakeVersionService(),
+            device_service=device_service,
+            clone_service=clone_service,
+            executor=ThreadPoolExecutor(max_workers=1),
+        )
+        self.addCleanup(controller.shutdown)
+
+        controller.upgrade_selected_image(None, "/dev/sdc")
+
+        self.assertEqual(
+            clone_service.upgrade_from_device_calls,
+            [("/dev/disk/by-id/usb-source", "/dev/disk/by-id/usb-target")],
+        )
+
+    def test_attached_upgrade_requires_source_in_confirmed_device_list(self) -> None:
+        clone_service = FakeCloneService()
+        state = AppState(
+            devices=[FakeDeviceService().list_devices()[1]],
+            source_mode=SourceMode.ATTACHED,
+            attached_live_source_device="/dev/sdb1",
+            attached_live_source_mount="/mnt/source",
+            attached_live_source_version="7.7.2",
+        )
+        controller = ApplicationController(
+            state=state,
+            version_service=FakeVersionService(),
+            device_service=FakeDeviceService(),
+            clone_service=clone_service,
+            executor=ThreadPoolExecutor(max_workers=1),
+        )
+        self.addCleanup(controller.shutdown)
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "Source device was not present in the confirmed device list",
+        ):
+            controller.upgrade_selected_image(None, "/dev/sdc")
+
+        self.assertEqual(clone_service.upgrade_from_device_calls, [])
 
     def test_attached_live_upgrade_rejects_source_as_target(self) -> None:
         clone_service = FakeCloneService()

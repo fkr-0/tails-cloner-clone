@@ -5,6 +5,7 @@ from io import BytesIO
 from pathlib import Path
 from queue import SimpleQueue
 from tempfile import TemporaryDirectory
+from typing import cast
 from unittest import mock
 
 from tails_cloner.app import TailsClonerApp
@@ -59,11 +60,18 @@ class _FakeLabel:
 class _FakeWidget:
     def __init__(self) -> None:
         self.state_calls: list[str] = []
+        self.current_state = "normal"
 
     def configure(self, options: dict[str, str] | None = None, **kwargs: str) -> None:
         state = kwargs.get("state") or (options or {}).get("state")
         if state is not None:
             self.state_calls.append(state)
+            self.current_state = state
+
+    def cget(self, name: str) -> str:
+        if name != "state":
+            raise KeyError(name)
+        return self.current_state
 
 
 class _FakeButton(_FakeLabel):
@@ -207,14 +215,47 @@ class AppWindowClassTests(unittest.TestCase):
         controller.shutdown.assert_not_called()
         app.destroy.assert_not_called()
 
+    def test_write_lock_disables_and_restores_all_mutable_controls(self) -> None:
+        app = TailsClonerApp.__new__(TailsClonerApp)
+        normal = _FakeWidget()
+        readonly = _FakeWidget()
+        readonly.current_state = "readonly"
+        app._write_sensitive_widgets = cast(list[tk.Widget], [normal, readonly])
+        app._write_control_states = []
+
+        app._set_write_controls_locked(True)
+
+        self.assertEqual(normal.current_state, "disabled")
+        self.assertEqual(readonly.current_state, "disabled")
+
+        app._set_write_controls_locked(False)
+
+        self.assertEqual(normal.current_state, "normal")
+        self.assertEqual(readonly.current_state, "readonly")
+
+    def test_close_is_blocked_while_verified_download_is_running(self) -> None:
+        app = TailsClonerApp.__new__(TailsClonerApp)
+        app._write_in_progress = False
+        app._download_in_progress = True
+        controller = mock.Mock()
+        app.controller = controller
+        app.destroy = mock.Mock()
+
+        with mock.patch("tails_cloner.app.messagebox.showwarning") as showwarning:
+            app._on_close()
+
+        showwarning.assert_called_once()
+        controller.shutdown.assert_not_called()
+        app.destroy.assert_not_called()
+
     def test_verified_remote_download_is_promoted_atomically(self) -> None:
         app = TailsClonerApp.__new__(TailsClonerApp)
         app._ui_events = SimpleQueue()
         image = b"verified Tails image"
         digest = hashlib.sha256(image).hexdigest()
-        successes: list[tuple[Path, str, str]] = []
+        successes: list[tuple[Path, str, str, str, str, str]] = []
         failures: list[str] = []
-        app._apply_remote_download_success = lambda path, name, actual: successes.append((path, name, actual))
+        app._apply_remote_download_success = lambda *args: successes.append(args)
         app._apply_remote_download_failure = failures.append
 
         with (
@@ -226,12 +267,18 @@ class AppWindowClassTests(unittest.TestCase):
                 side_effect=[
                     _FakeResponse(f"{digest}  tails.img\n".encode()),
                     _FakeResponse(image),
+                    _FakeResponse(b"detached signature"),
                 ],
             ),
+            mock.patch(
+                "tails_cloner.app.verify_openpgp_detached_signature",
+                return_value="0123456789ABCDEF0123456789ABCDEF01234567",
+            ) as verify_signature,
         ):
             app._download_selected_remote_image(
                 "https://example.invalid/tails.img",
                 "https://example.invalid/tails.img.sha256",
+                "https://example.invalid/tails.img.sig",
                 "tails.img",
             )
             app._drain_ui_events()
@@ -239,8 +286,13 @@ class AppWindowClassTests(unittest.TestCase):
             target = Path(tmpdir) / ".cache/tails-cloner-clone/downloads/tails.img"
             self.assertEqual(target.read_bytes(), image)
             self.assertEqual(list(target.parent.glob(".*.part")), [])
+            verify_signature.assert_called_once()
+            signature_path = verify_signature.call_args.args[1]
+            self.assertTrue(str(signature_path).endswith(".sig.part"))
 
-        self.assertEqual(successes[0][1:], ("tails.img", digest))
+        self.assertEqual(successes[0][1:3], ("tails.img", digest))
+        self.assertEqual(successes[0][3], "0123456789ABCDEF0123456789ABCDEF01234567")
+        self.assertEqual(successes[0][4], "https://example.invalid/tails.img")
         self.assertEqual(failures, [])
 
     def test_failed_remote_verification_keeps_existing_cached_image(self) -> None:
@@ -268,6 +320,7 @@ class AppWindowClassTests(unittest.TestCase):
                 app._download_selected_remote_image(
                     "https://example.invalid/tails.img",
                     "https://example.invalid/tails.img.sha256",
+                    "https://example.invalid/tails.img.sig",
                     "tails.img",
                 )
                 app._drain_ui_events()
@@ -286,6 +339,7 @@ class AppWindowClassTests(unittest.TestCase):
             {
                 "selected_image_url": "http://example.invalid/tails.img",
                 "selected_checksum_url": "https://example.invalid/tails.img.sha256",
+                "selected_signature_url": "https://example.invalid/tails.img.sig",
                 "selected_version": "7.7.2",
                 "status_message": "",
                 "verified_image_path": "old",
@@ -299,6 +353,49 @@ class AppWindowClassTests(unittest.TestCase):
 
         executor.submit.assert_not_called()
         self.assertIn("must use HTTPS", state.status_message)
+
+    def test_remote_download_requires_gnupg_before_scheduling(self) -> None:
+        app = TailsClonerApp.__new__(TailsClonerApp)
+        state = type(
+            "State",
+            (),
+            {
+                "selected_image_url": "https://example.invalid/tails.img",
+                "selected_checksum_url": "https://example.invalid/tails.img.sha256",
+                "selected_signature_url": "https://example.invalid/tails.img.sig",
+                "selected_version": "7.7.2",
+                "status_message": "",
+            },
+        )()
+        executor = mock.Mock()
+        app.controller = type("Controller", (), {"state": state, "executor": executor})()
+
+        with mock.patch("tails_cloner.app.shutil.which", return_value=None):
+            app._start_remote_download()
+
+        executor.submit.assert_not_called()
+        self.assertIn("GnuPG", state.status_message)
+
+    def test_remote_download_requires_detached_signature(self) -> None:
+        app = TailsClonerApp.__new__(TailsClonerApp)
+        state = type(
+            "State",
+            (),
+            {
+                "selected_image_url": "https://example.invalid/tails.img",
+                "selected_checksum_url": "https://example.invalid/tails.img.sha256",
+                "selected_signature_url": "",
+                "selected_version": "7.7.2",
+                "status_message": "",
+            },
+        )()
+        executor = mock.Mock()
+        app.controller = type("Controller", (), {"state": state, "executor": executor})()
+
+        app._start_remote_download()
+
+        executor.submit.assert_not_called()
+        self.assertIn("no detached OpenPGP signature", state.status_message)
 
     def test_torified_image_download_enforces_https_protocols(self) -> None:
         app = TailsClonerApp.__new__(TailsClonerApp)

@@ -120,6 +120,40 @@ def test_target_inspection_rejects_current_os_disk() -> None:
         inspect_target_deactivation_commands("/dev/sda", fake_inspect)
 
 
+def test_target_inspection_rejects_additional_protected_mounts() -> None:
+    for protected_mount in ("/home", "/lib/live/mount/medium", "/run/live/medium"):
+        payload = {
+            "blockdevices": [
+                {
+                    "path": "/dev/sda",
+                    "type": "disk",
+                    "ro": False,
+                    "size": 32 * 1024**3,
+                    "children": [
+                        {
+                            "path": "/dev/sda1",
+                            "type": "part",
+                            "fstype": "ext4",
+                            "mountpoints": [protected_mount],
+                        }
+                    ],
+                }
+            ]
+        }
+
+        payload_json = json.dumps(payload)
+
+        def fake_inspect(
+            command: list[str],
+            _payload_json: str = payload_json,
+            **_kwargs: object,
+        ) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(command, 0, stdout=_payload_json, stderr="")
+
+        with pytest.raises(RuntimeError, match="currently running operating system"):
+            inspect_target_deactivation_commands("/dev/sda", fake_inspect)
+
+
 def test_target_inspection_rejects_oversized_image_before_deactivation() -> None:
     payload = {
         "blockdevices": [

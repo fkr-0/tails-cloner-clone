@@ -20,6 +20,10 @@ class OperationSource:
     device: str = ""
     version: str = ""
     size_bytes: int = 0
+    verified: bool = False
+    sha256: str = ""
+    origin_url: str = ""
+    signing_fingerprint: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +81,10 @@ class OperationPlan:
         if self.source.type == "remote_image":
             version = f" {self.source.version}" if self.source.version else ""
             return f"downloaded Tails image{version}".strip()
+        if self.source.type == "image" and self.source.verified:
+            filename = self.source.path.rsplit("/", 1)[-1] if self.source.path else "cached image"
+            version = f" {self.source.version}" if self.source.version else ""
+            return f"verified downloaded Tails{version} ({filename})"
         return self.source.path.rsplit("/", 1)[-1] if self.source.path else "selected image"
 
     @property
@@ -87,6 +95,14 @@ class OperationPlan:
         vendor_model = " ".join(part for part in [self.target.vendor, self.target.model] if part).strip()
         if vendor_model:
             details.append(vendor_model)
+        if self.target.wwn:
+            details.append(f"WWN {self.target.wwn}")
+        elif self.target.serial:
+            details.append(f"serial {self.target.serial}")
+        elif self.target.stable_path:
+            details.append(f"by-id {self.target.stable_path}")
+        else:
+            details.append("no stable hardware ID reported")
         if not self.target.removable:
             details.append("internal/non-removable")
         return " · ".join(details)
@@ -159,6 +175,10 @@ def _device_to_dict(device: BlockDevice) -> dict[str, Any]:
         "vendor": device.vendor,
         "transport": device.transport,
         "removable": device.removable,
+        "serial": device.serial,
+        "wwn": device.wwn,
+        "major_minor": device.major_minor,
+        "stable_path": device.stable_path,
         "read_only": device.read_only,
         "fstype": device.fstype,
         "label": device.label,
@@ -184,8 +204,19 @@ def plan_operation(operation: OperationKind, source: OperationSource, target: Bl
         errors.append("Download the selected remote IMG before starting a write operation.")
     elif source.type == "image" and not source.path:
         errors.append("Choose a local ISO or IMG file before starting a write operation.")
-    elif source.type == "running_source" and not source.device:
-        errors.append("The running Tails source device could not be determined.")
+    elif source.type == "image" and not source.verified:
+        warnings.append(
+            "local image has not been cryptographically verified by this application; "
+            "verify its official Tails signature before writing"
+        )
+    elif source.type == "running_source":
+        if not source.device:
+            errors.append("The running Tails source device could not be determined.")
+        if operation != OperationKind.UPGRADE:
+            errors.append(
+                "The running Tails medium is supported only as an upgrade source. "
+                "Choose a verified Tails IMG for install or reinstall."
+            )
     elif source.type == "attached_source":
         if not source.device:
             errors.append("Validate an attached Tails live source before starting an upgrade.")
@@ -228,6 +259,11 @@ def plan_operation(operation: OperationKind, source: OperationSource, target: Bl
 
     if not target.removable:
         warnings.append("target is not reported as removable; verify that this is intentional")
+
+    if not (target.wwn or target.serial or target.stable_path):
+        warnings.append(
+            "target exposes no stable hardware identifier; hot-swap revalidation is limited to device characteristics"
+        )
 
     return OperationPlan(
         operation=operation,

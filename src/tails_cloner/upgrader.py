@@ -23,6 +23,8 @@ RunCommand = Callable[[list[str]], subprocess.CompletedProcess[str]]
 LSBLK_COLUMNS = "NAME,PATH,FSTYPE,LABEL,PARTLABEL,SIZE,TYPE,RO,MOUNTPOINTS"
 TAILS_FILESYSTEM_LABEL = "tails"
 PERSISTENCE_LABELS = {"persistence", "tailsdata", "tailsdata_unlocked"}
+PROTECTED_SYSTEM_MOUNTPOINTS = {"/", "/boot", "/boot/efi", "/home", "/usr", "/var"}
+PROTECTED_LIVE_MOUNT_PREFIXES = ("/lib/live/mount", "/run/live")
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,6 +200,21 @@ def _validate_partition_pair(source: PartitionInfo, target: PartitionInfo) -> No
         raise RuntimeError(
             "Source Tails system partition is larger than the target partition: "
             f"{source.size_bytes} > {target.size_bytes} bytes"
+        )
+
+    protected_mountpoints = sorted(
+        mountpoint
+        for mountpoint in target.mountpoints
+        if mountpoint in PROTECTED_SYSTEM_MOUNTPOINTS
+        or any(
+            mountpoint == prefix or mountpoint.startswith(f"{prefix}/")
+            for prefix in PROTECTED_LIVE_MOUNT_PREFIXES
+        )
+    )
+    if protected_mountpoints:
+        raise RuntimeError(
+            "Refusing to upgrade a Tails partition used by the currently running operating system: "
+            + ", ".join(protected_mountpoints)
         )
 
 

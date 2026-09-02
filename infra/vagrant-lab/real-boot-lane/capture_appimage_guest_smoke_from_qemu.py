@@ -96,7 +96,7 @@ def validate_serial_log(serial_log: Path) -> dict[str, Any]:
 def prepare_share(output_dir: Path, *, appimage: Path | None, share_tag: str, mount_point: str) -> Path:
     command = ['python3', str(PREPARE_SHARE), '--output-dir', str(output_dir), '--tag', share_tag, '--mount-point', mount_point]
     if appimage is not None:
-        command.extend(['--appimage', str(appimage)])
+        command.extend(['--appimage', str(appimage.resolve())])
     subprocess.run(command, check=True, text=True, stdout=subprocess.PIPE)
     return output_dir
 

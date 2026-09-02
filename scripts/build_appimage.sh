@@ -35,7 +35,7 @@ cat > "$APPDIR/tails-cloner-clone.desktop" <<'EOF'
 [Desktop Entry]
 Type=Application
 Name=Tails Cloner Clone
-Comment=Refreshed standalone GUI app for cloning Tails images onto removable devices
+Comment=Standalone GUI app for safely installing or upgrading Tails on selected block devices
 Exec=tails-cloner-clone
 Icon=tails-cloner-clone
 StartupWMClass=tails-cloner-clone

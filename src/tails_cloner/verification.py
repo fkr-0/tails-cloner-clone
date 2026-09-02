@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import re
+import subprocess
+from collections.abc import Callable
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 _SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 _BSD_SHA256_RE = re.compile(r"^SHA256 \((?P<name>.+)\) = (?P<digest>[0-9a-fA-F]{64})$")
+TAILS_SIGNING_PRIMARY_FINGERPRINT = "A490D0F4D311A4153E2BB7CADBB802B258ACD84F"
+RunCommand = Callable[..., subprocess.CompletedProcess[str]]
 
 
 def sha256_file(path: str | Path, *, chunk_size: int = 1024 * 1024) -> str:
@@ -71,3 +76,95 @@ def verify_sha256(path: str | Path, expected_digest: str) -> str:
     if actual != expected:
         raise ValueError(f"SHA-256 mismatch: expected {expected}, got {actual}")
     return actual
+
+
+def _run_gpg(command: list[str], run: RunCommand) -> subprocess.CompletedProcess[str]:
+    try:
+        result = run(command, check=False, text=True, capture_output=True)
+    except FileNotFoundError as error:
+        raise RuntimeError("GnuPG is required to verify Tails image signatures") from error
+    return result
+
+
+def _gpg_error(result: subprocess.CompletedProcess[str], action: str) -> ValueError:
+    detail = (result.stderr or result.stdout).strip()
+    return ValueError(f"OpenPGP {action} failed: {detail or f'gpg exited with {result.returncode}'}")
+
+
+def verify_openpgp_detached_signature(
+    image_path: str | Path,
+    signature_path: str | Path,
+    key_path: str | Path,
+    *,
+    expected_primary_fingerprint: str = TAILS_SIGNING_PRIMARY_FINGERPRINT,
+    run: RunCommand = subprocess.run,
+) -> str:
+    """Verify a detached Tails image signature against a pinned primary key.
+
+    A fresh temporary GnuPG home prevents the user's keyring and trust settings
+    from influencing verification. The imported key must contain the exact
+    expected Tails primary fingerprint, and the valid signature must chain to
+    that primary key. Expired or revoked signatures/keys are rejected.
+    """
+    image = Path(image_path)
+    signature = Path(signature_path)
+    key = Path(key_path)
+    for candidate, description in (
+        (image, "image"),
+        (signature, "detached signature"),
+        (key, "Tails signing key"),
+    ):
+        if not candidate.is_file():
+            raise FileNotFoundError(f"Missing {description}: {candidate}")
+
+    expected = expected_primary_fingerprint.replace(" ", "").upper()
+    if not re.fullmatch(r"[0-9A-F]{40}", expected):
+        raise ValueError("Pinned OpenPGP fingerprint must contain exactly 40 hexadecimal characters")
+
+    with TemporaryDirectory(prefix="tails-cloner-gpg-") as gnupg_home:
+        base = ["gpg", "--batch", "--no-options", "--homedir", gnupg_home]
+        imported = _run_gpg([*base, "--import", str(key)], run)
+        if imported.returncode != 0:
+            raise _gpg_error(imported, "key import")
+
+        listed = _run_gpg([*base, "--with-colons", "--fingerprint", expected], run)
+        if listed.returncode != 0:
+            raise _gpg_error(listed, "fingerprint lookup")
+        fingerprints = {
+            fields[9].upper()
+            for line in listed.stdout.splitlines()
+            if (fields := line.split(":")) and fields[0] == "fpr" and len(fields) > 9
+        }
+        if expected not in fingerprints:
+            raise ValueError(f"Bundled Tails signing key does not contain pinned fingerprint {expected}")
+
+        verified = _run_gpg(
+            [*base, "--status-fd", "1", "--verify", str(signature), str(image)],
+            run,
+        )
+        status = verified.stdout
+        rejected_markers = (
+            "BADSIG",
+            "ERRSIG",
+            "EXPSIG",
+            "EXPKEYSIG",
+            "REVKEYSIG",
+            "KEYREVOKED",
+            "NO_PUBKEY",
+        )
+        if verified.returncode != 0 or any(f"[GNUPG:] {marker}" in status for marker in rejected_markers):
+            raise _gpg_error(verified, "signature verification")
+
+        for line in status.splitlines():
+            if not line.startswith("[GNUPG:] VALIDSIG "):
+                continue
+            fields = line.split()
+            signing_fingerprint = fields[2].upper()
+            primary_fingerprint = fields[-1].upper() if len(fields) >= 12 else signing_fingerprint
+            if expected not in {signing_fingerprint, primary_fingerprint}:
+                raise ValueError(
+                    "OpenPGP signature is valid but does not chain to the pinned Tails signing key"
+                )
+            return signing_fingerprint
+
+        raise ValueError("OpenPGP verification did not emit a valid-signature record")
