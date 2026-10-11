@@ -11,11 +11,19 @@ import json
 import os
 import subprocess
 import time
-from collections.abc import Callable, Iterator
+from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from tails_cloner.blockdev import (
+    STDERR_TAIL_LINES,
+    mountpoints,
+    protected_mountpoints,
+    run_streaming_command,
+    walk_nodes,
+)
 from tails_cloner.source import LocalImageSource
 
 ProgressCallback = Callable[[str], None]
@@ -25,8 +33,6 @@ Sleep = Callable[[float], None]
 LSBLK_COLUMNS = "NAME,PATH,FSTYPE,LABEL,PARTLABEL,SIZE,TYPE,RO,MOUNTPOINTS"
 TAILS_FILESYSTEM_LABEL = "tails"
 PERSISTENCE_LABELS = {"persistence", "tailsdata", "tailsdata_unlocked"}
-PROTECTED_SYSTEM_MOUNTPOINTS = {"/", "/boot", "/boot/efi", "/home", "/usr", "/var"}
-PROTECTED_LIVE_MOUNT_PREFIXES = ("/lib/live/mount", "/run/live")
 LOOP_PARTITION_WAIT_TIMEOUT_SECONDS = 2.0
 LOOP_PARTITION_POLL_INTERVAL_SECONDS = 0.1
 
@@ -77,33 +83,17 @@ def _run_json(command: list[str], runner: RunCommand) -> dict[str, Any]:
     return payload
 
 
-def _walk_block_nodes(nodes: list[dict[str, Any]]) -> Iterator[dict[str, Any]]:
-    for node in nodes:
-        yield node
-        children = node.get("children") or []
-        if isinstance(children, list):
-            yield from _walk_block_nodes([child for child in children if isinstance(child, dict)])
-
-
 def list_partitions(device: str, runner: RunCommand = run_command) -> list[dict[str, Any]]:
     data = _run_json(["lsblk", "--json", "--bytes", "--output", LSBLK_COLUMNS, device], runner)
     roots = [node for node in data.get("blockdevices", []) if isinstance(node, dict)]
     result: list[dict[str, Any]] = []
     for root in roots:
-        for node in _walk_block_nodes([root]):
+        for node in walk_nodes([root]):
             if node is root:
                 continue
             if node.get("type") in {"part", "crypt"}:
                 result.append(node)
     return result
-
-
-def _mountpoints(value: object) -> tuple[str, ...]:
-    if isinstance(value, list):
-        return tuple(item for item in value if isinstance(item, str) and item.startswith("/"))
-    if isinstance(value, str) and value.startswith("/"):
-        return (value,)
-    return ()
 
 
 def _partition_info(raw: dict[str, Any]) -> PartitionInfo:
@@ -114,7 +104,7 @@ def _partition_info(raw: dict[str, Any]) -> PartitionInfo:
         partlabel=str(raw.get("partlabel") or "").casefold(),
         size_bytes=int(raw.get("size") or 0),
         read_only=bool(raw.get("ro", False)),
-        mountpoints=_mountpoints(raw.get("mountpoints")),
+        mountpoints=tuple(item for item in mountpoints(raw.get("mountpoints")) if item.startswith("/")),
     )
 
 
@@ -270,19 +260,11 @@ def _validate_partition_pair(source: PartitionInfo, target: PartitionInfo) -> No
             f"{source.size_bytes} > {target.size_bytes} bytes"
         )
 
-    protected_mountpoints = sorted(
-        mountpoint
-        for mountpoint in target.mountpoints
-        if mountpoint in PROTECTED_SYSTEM_MOUNTPOINTS
-        or any(
-            mountpoint == prefix or mountpoint.startswith(f"{prefix}/")
-            for prefix in PROTECTED_LIVE_MOUNT_PREFIXES
-        )
-    )
-    if protected_mountpoints:
+    in_use = protected_mountpoints(target.mountpoints)
+    if in_use:
         raise RuntimeError(
             "Refusing to upgrade a Tails partition used by the currently running operating system: "
-            + ", ".join(protected_mountpoints)
+            + ", ".join(in_use)
         )
 
 
@@ -294,6 +276,30 @@ def _unmount_target_partition(
     for mountpoint in target.mountpoints:
         _emit(progress_callback, f"Unmounting target system partition from {mountpoint}")
         mutate(["umount", "--", mountpoint])
+
+
+def _copy_partition(
+    command: list[str],
+    runner: RunCommand,
+    privileged_runner: RunCommand | None,
+    progress_callback: ProgressCallback | None,
+) -> None:
+    """Run the partition copy, streaming ``dd`` progress when using the production runner."""
+    if privileged_runner is not None or runner is not run_command:
+        # Injected runners (tests, embedding callers) keep the captured-output contract.
+        _resolve_privileged_runner(runner, privileged_runner)(command)
+        return
+
+    tail: deque[str] = deque(maxlen=STDERR_TAIL_LINES)
+
+    def relay(message: str) -> None:
+        tail.append(message)
+        _emit(progress_callback, message)
+
+    status = run_streaming_command(build_privileged_command(command), relay)
+    if status != 0:
+        detail = f": {' | '.join(tail)}" if tail else ""
+        raise RuntimeError(f"Partition copy exited with status {status}{detail}")
 
 
 def _upgrade_from_source_partition(
@@ -314,7 +320,7 @@ def _upgrade_from_source_partition(
 
     command = build_partition_upgrade_command(source_partition.path, target_partition.path)
     _emit(progress_callback, "Running partition-scoped Tails upgrade")
-    mutate(command)
+    _copy_partition(command, runner, privileged_runner, progress_callback)
     runner(["sync"])
     mutate(["blockdev", "--flushbufs", target_device])
     _best_effort_udev_settle(runner)
@@ -379,5 +385,6 @@ def upgrade_tails_system_partition(
     finally:
         try:
             detach_image(loopdev, runner, privileged_runner)
-        except subprocess.CalledProcessError as error:
+        except (OSError, subprocess.SubprocessError) as error:
+            # Never let a cleanup failure replace the real upgrade error (or fail a good one).
             _emit(progress_callback, f"Warning: failed to detach {loopdev}: {error}")

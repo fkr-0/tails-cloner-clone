@@ -9,15 +9,14 @@ from __future__ import annotations
 
 import argparse
 import os
-import re
 import sys
 from collections.abc import Callable, Sequence
-from contextlib import suppress
 from dataclasses import asdict
 from pathlib import Path
 from typing import cast
 
 from tails_cloner import __version__
+from tails_cloner.blockdev import parse_dd_bytes
 from tails_cloner.cli_events import (
     CliError,
     CommandResult,
@@ -53,8 +52,6 @@ from tails_cloner.source import (
     get_parent_disk_path,
 )
 from tails_cloner.verification import verify_openpgp_detached_signature, verify_sha256
-
-_DD_BYTES_RE = re.compile(r"(?P<bytes>\d+)\s+bytes(?:\s+\([^)]*\))?\s+(?:copied|transferred)", re.IGNORECASE)
 
 Handler = Callable[[argparse.Namespace, EventSink], CommandResult]
 
@@ -705,10 +702,9 @@ def _post_write_options(args: argparse.Namespace) -> PostWriteOptions:
 def _progress_callback(sink: EventSink) -> Callable[[str], None]:
     def emit(message: str) -> None:
         fields: dict[str, object] = {}
-        match = _DD_BYTES_RE.search(message)
-        if match is not None:
-            with suppress(ValueError):
-                fields["bytes_written"] = int(match.group("bytes"))
+        written = parse_dd_bytes(message)
+        if written is not None:
+            fields["bytes_written"] = written
         sink.progress(message, **fields)
 
     return emit

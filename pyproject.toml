@@ -82,6 +82,7 @@ warn_unreachable = true
 module = [
   "test_app",
   "test_appimage_release_smoke",
+  "test_blockdev",
   "test_boot_loader",
   "test_cli",
   "test_controller",

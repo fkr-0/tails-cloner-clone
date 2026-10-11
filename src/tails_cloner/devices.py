@@ -7,6 +7,12 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from tails_cloner.blockdev import (
+    is_live_medium_mountpoint,
+    is_protected_mountpoint,
+    mountpoints,
+    walk_nodes,
+)
 from tails_cloner.drive_inspector import has_tails_installation
 from tails_cloner.models import BlockDevice
 
@@ -16,35 +22,11 @@ LSBLK_COLUMNS = (
 )
 MIN_INSTALLATION_SIZE_GB = 8
 MIN_UPGRADE_SIZE_GB = 16
-SYSTEM_MOUNTPOINTS = {"/", "/boot", "/boot/efi", "/home", "/usr", "/var"}
-PROTECTED_LIVE_MOUNT_PREFIXES = ("/lib/live/mount", "/run/live")
 PSEUDO_DISK_PATH = re.compile(r"^/dev/(?:zram|ram)\d+$")
 
 
-def _walk_nodes(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    result: list[dict[str, Any]] = []
-    for node in nodes:
-        result.append(node)
-        children = node.get("children") or []
-        if isinstance(children, list):
-            result.extend(_walk_nodes([child for child in children if isinstance(child, dict)]))
-    return result
-
-
-def _mountpoints(node: dict[str, Any]) -> set[str]:
-    value = node.get("mountpoints")
-    if isinstance(value, list):
-        return {entry for entry in value if isinstance(entry, str)}
-    if isinstance(value, str):
-        return {value}
-    return set()
-
-
-def _is_protected_mountpoint(mountpoint: str) -> bool:
-    return mountpoint in SYSTEM_MOUNTPOINTS or any(
-        mountpoint == prefix or mountpoint.startswith(f"{prefix}/")
-        for prefix in PROTECTED_LIVE_MOUNT_PREFIXES
-    )
+def _node_mountpoints(node: dict[str, Any]) -> set[str]:
+    return set(mountpoints(node.get("mountpoints")))
 
 
 def format_bytes_as_gib(size_bytes: int) -> str:
@@ -136,20 +118,16 @@ def parse_lsblk_json(payload: dict[str, Any], *, running_root_source: str = "") 
 
         children = item.get("children") or []
         child_nodes = [child for child in children if isinstance(child, dict)] if isinstance(children, list) else []
-        all_descendants = _walk_nodes(child_nodes)
+        all_descendants = list(walk_nodes(child_nodes))
         system_nodes = [item, *all_descendants]
         partitions = [child for child in all_descendants if child.get("type") == "part"]
         is_host_system_device = any(
-            any(_is_protected_mountpoint(mountpoint) for mountpoint in _mountpoints(node))
-            for node in system_nodes
+            is_protected_mountpoint(mountpoint) for node in system_nodes for mountpoint in _node_mountpoints(node)
         )
-        is_current_system_device = any("/" in _mountpoints(node) for node in system_nodes) or any(
-            any(
-                mountpoint == prefix or mountpoint.startswith(f"{prefix}/")
-                for prefix in PROTECTED_LIVE_MOUNT_PREFIXES
-            )
+        is_current_system_device = any(
+            mountpoint == "/" or is_live_medium_mountpoint(mountpoint)
             for node in system_nodes
-            for mountpoint in _mountpoints(node)
+            for mountpoint in _node_mountpoints(node)
         )
         if normalized_root_source:
             is_current_system_device = is_current_system_device or any(

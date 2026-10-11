@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import json
 import subprocess
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
 
+from tails_cloner.blockdev import (
+    mountpoints,
+    protected_mountpoints,
+    run_streaming_command,
+    walk_nodes,
+)
 from tails_cloner.models import PostWriteOptions
 from tails_cloner.post_write import apply_post_write_options
 from tails_cloner.source import LocalImageSource
@@ -17,8 +22,6 @@ InspectRun = Callable[..., subprocess.CompletedProcess[str]]
 TargetPreparer = Callable[[str, int, RunCloneCommand, Callable[[str], None]], None]
 
 TARGET_LSBLK_COLUMNS = "PATH,NAME,TYPE,FSTYPE,MOUNTPOINTS,RO,SIZE"
-SYSTEM_MOUNTPOINTS = {"/", "/boot", "/boot/efi", "/home", "/usr", "/var"}
-PROTECTED_LIVE_MOUNT_PREFIXES = ("/lib/live/mount", "/run/live")
 
 
 def build_clone_command(image_path: str | Path, device_path: str, use_pkexec: bool = True) -> list[str]:
@@ -36,39 +39,8 @@ def build_clone_command(image_path: str | Path, device_path: str, use_pkexec: bo
     return command
 
 
-def _stream_process_output(process: subprocess.Popen[str], progress_callback: Callable[[str], None]) -> int:
-    assert process.stderr is not None
-    for line in process.stderr:
-        message = line.strip()
-        if message:
-            progress_callback(message)
-    return process.wait()
-
-
 def run_clone_command(command: list[str], progress_callback: Callable[[str], None]) -> int:
-    process = subprocess.Popen(  # noqa: S603 - destructive system command is the tool's core job
-        command,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    return _stream_process_output(process, progress_callback)
-
-
-def _walk_nodes(nodes: list[dict[str, Any]]) -> Iterator[dict[str, Any]]:
-    for node in nodes:
-        yield node
-        children = node.get("children") or []
-        if isinstance(children, list):
-            yield from _walk_nodes([child for child in children if isinstance(child, dict)])
-
-
-def _mountpoints(value: object) -> list[str]:
-    if isinstance(value, list):
-        return [mountpoint for mountpoint in value if isinstance(mountpoint, str)]
-    if isinstance(value, str):
-        return [value]
-    return []
+    return run_streaming_command(command, progress_callback)
 
 
 def inspect_target_deactivation_commands(
@@ -82,7 +54,7 @@ def inspect_target_deactivation_commands(
         raise ValueError(f"Whole-device target must be a /dev path: {device_path}")
 
     result = inspect_run(
-        ["lsblk", "--json", "--output", TARGET_LSBLK_COLUMNS, device_path],
+        ["lsblk", "--json", "--bytes", "--output", TARGET_LSBLK_COLUMNS, device_path],
         check=True,
         text=True,
         capture_output=True,
@@ -97,7 +69,10 @@ def inspect_target_deactivation_commands(
         raise RuntimeError(f"Whole-device install target is not a disk: {device_path}")
     if bool(root.get("ro", False)):
         raise RuntimeError(f"Whole-device install target is read-only: {device_path}")
-    target_size_bytes = int(root.get("size") or 0)
+    try:
+        target_size_bytes = int(root.get("size") or 0)
+    except (TypeError, ValueError) as error:
+        raise RuntimeError(f"Could not read the target size from lsblk: {root.get('size')!r}") from error
     if required_size_bytes > 0 and target_size_bytes > 0 and required_size_bytes > target_size_bytes:
         raise RuntimeError(
             "Image is larger than the whole-device target: "
@@ -105,18 +80,11 @@ def inspect_target_deactivation_commands(
         )
 
     commands: list[list[str]] = []
-    descendants = list(_walk_nodes([root]))[1:]
-    active_system_mounts = sorted(
-        {
-            mountpoint
-            for node in descendants
-            for mountpoint in _mountpoints(node.get("mountpoints"))
-            if mountpoint in SYSTEM_MOUNTPOINTS
-            or any(
-                mountpoint == prefix or mountpoint.startswith(f"{prefix}/")
-                for prefix in PROTECTED_LIVE_MOUNT_PREFIXES
-            )
-        }
+    # Include the disk node itself: a whole-disk filesystem (no partition table)
+    # reports its mount on the root node and must be refused/unmounted too.
+    nodes = list(walk_nodes([root]))
+    active_system_mounts = protected_mountpoints(
+        mountpoint for node in nodes for mountpoint in mountpoints(node.get("mountpoints"))
     )
     if active_system_mounts:
         raise RuntimeError(
@@ -124,17 +92,17 @@ def inspect_target_deactivation_commands(
             + ", ".join(active_system_mounts)
         )
 
-    for node in reversed(descendants):
+    for node in reversed(nodes):
         path = str(node.get("path") or "")
-        mountpoints = _mountpoints(node.get("mountpoints"))
+        node_mounts = mountpoints(node.get("mountpoints"))
         fstype = str(node.get("fstype") or "").casefold()
 
-        if fstype == "swap" or "[SWAP]" in mountpoints:
+        if fstype == "swap" or "[SWAP]" in node_mounts:
             if path:
                 commands.append(["pkexec", "swapoff", "--", path])
             continue
 
-        for mountpoint in mountpoints:
+        for mountpoint in node_mounts:
             if mountpoint.startswith("/"):
                 commands.append(["pkexec", "umount", "--", mountpoint])
 

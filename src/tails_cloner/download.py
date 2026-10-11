@@ -133,6 +133,34 @@ def open_https(url: str, *, timeout: int) -> Any:
     return build_opener(HttpsOnlyRedirectHandler()).open(url, timeout=timeout)
 
 
+def fetch_checksum_text(url: str, *, use_torify: bool) -> str:
+    """Fetch a published checksum over HTTPS (through Tor when requested).
+
+    Raises ``ValueError`` for a non-HTTPS URL/redirect or an oversized response and
+    :class:`DownloadNetworkError` for transport failures. Shared by the verified
+    downloader and the GUI so neither bypasses Tor routing or the size limit.
+    """
+    require_https_url(url, "Remote checksum")
+    try:
+        if use_torify:
+            text = fetch_text_torified(url, 30)
+            if len(text.encode("utf-8")) > MAX_CHECKSUM_BYTES:
+                raise ValueError("Published checksum response is unexpectedly large")
+            return text
+
+        with open_https(url, timeout=30) as response:
+            effective_url = str(response.geturl()) if hasattr(response, "geturl") else url
+            require_https_url(effective_url, "Remote checksum redirect")
+            payload: bytes = response.read(MAX_CHECKSUM_BYTES + 1)
+        if len(payload) > MAX_CHECKSUM_BYTES:
+            raise ValueError("Published checksum response is unexpectedly large")
+        return payload.decode("utf-8", errors="strict")
+    except ValueError:
+        raise
+    except Exception as error:  # noqa: BLE001 - normalized at service boundary
+        raise DownloadNetworkError(f"Could not retrieve remote checksum: {error}") from error
+
+
 class VerifiedImageDownloader:
     """Download and verify an official Tails IMG with atomic destination writes."""
 
@@ -165,25 +193,7 @@ class VerifiedImageDownloader:
             )
 
     def _read_checksum(self, url: str) -> str:
-        require_https_url(url, "Remote checksum")
-        try:
-            if self._use_torify():
-                text = fetch_text_torified(url, 30)
-                if len(text.encode("utf-8")) > MAX_CHECKSUM_BYTES:
-                    raise ValueError("Published checksum response is unexpectedly large")
-                return text
-
-            with open_https(url, timeout=30) as response:
-                effective_url = str(response.geturl()) if hasattr(response, "geturl") else url
-                require_https_url(effective_url, "Remote checksum redirect")
-                payload: bytes = response.read(MAX_CHECKSUM_BYTES + 1)
-            if len(payload) > MAX_CHECKSUM_BYTES:
-                raise ValueError("Published checksum response is unexpectedly large")
-            return payload.decode("utf-8", errors="strict")
-        except ValueError:
-            raise
-        except Exception as error:  # noqa: BLE001 - normalized at service boundary
-            raise DownloadNetworkError(f"Could not retrieve remote checksum: {error}") from error
+        return fetch_checksum_text(url, use_torify=self._use_torify())
 
     def _download_signature(self, url: str, destination: Path) -> None:
         require_https_url(url, "Remote signature")
@@ -219,8 +229,6 @@ class VerifiedImageDownloader:
             if len(payload) > MAX_SIGNATURE_BYTES:
                 raise ValueError("Published OpenPGP signature is unexpectedly large")
             destination.write_bytes(payload)
-        except ValueError:
-            raise
         except Exception as error:  # noqa: BLE001 - normalized at service boundary
             raise DownloadNetworkError(f"Could not retrieve remote OpenPGP signature: {error}") from error
 
@@ -279,8 +287,6 @@ class VerifiedImageDownloader:
                         bytes_received=received,
                         bytes_total=total,
                     )
-        except ValueError:
-            raise
         except Exception as error:  # noqa: BLE001 - normalized at service boundary
             raise DownloadNetworkError(f"Could not download remote IMG: {error}") from error
 

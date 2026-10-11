@@ -173,3 +173,89 @@ def test_torified_image_download_pins_https_for_initial_and_redirect_protocols(t
     assert "--proto" in command
     assert "=https" in command
     assert "--proto-redir" in command
+
+
+def test_oversized_signature_is_reported_as_network_error_not_raw_value_error(tmp_path: Path) -> None:
+    downloader = VerifiedImageDownloader(use_torify=lambda: False)
+    destination = tmp_path / "tails-amd64-7.7.2.img"
+    digest = "a" * 64
+
+    class _Response:
+        headers: dict[str, str] = {}
+
+        def __enter__(self) -> "_Response":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def geturl(self) -> str:
+            return "https://example.invalid/tails.sig"
+
+        def read(self, _size: int = -1) -> bytes:
+            return b"x" * (2 * 1024 * 1024)
+
+    with (
+        mock.patch.object(downloader, "_read_checksum", return_value=f"{digest}  tails-amd64-7.7.2.img\n"),
+        mock.patch("tails_cloner.download.open_https", return_value=_Response()),
+        pytest.raises(DownloadNetworkError, match="unexpectedly large"),
+    ):
+        downloader.download(request(destination))
+
+    assert list(tmp_path.glob(".*")) == []
+
+
+def test_https_downgrade_during_image_transfer_is_reported_as_network_error(tmp_path: Path) -> None:
+    downloader = VerifiedImageDownloader(use_torify=lambda: False)
+    destination = tmp_path / "tails-amd64-7.7.2.img"
+    digest = "a" * 64
+
+    def write_signature(_url: str, path: Path) -> None:
+        path.write_bytes(b"signature")
+
+    with (
+        mock.patch.object(downloader, "_read_checksum", return_value=f"{digest}  tails-amd64-7.7.2.img\n"),
+        mock.patch.object(downloader, "_download_signature", side_effect=write_signature),
+        mock.patch(
+            "tails_cloner.download.open_https",
+            side_effect=ValueError("Remote redirect URL must use HTTPS: http://evil.invalid/"),
+        ),
+        pytest.raises(DownloadNetworkError, match="must use HTTPS"),
+    ):
+        downloader.download(request(destination))
+
+    assert list(tmp_path.glob(".*")) == []
+
+
+def test_fetch_checksum_text_enforces_https_and_size_limit() -> None:
+    from tails_cloner.download import MAX_CHECKSUM_BYTES, fetch_checksum_text
+
+    with pytest.raises(ValueError, match="must use HTTPS"):
+        fetch_checksum_text("http://example.invalid/x.sha256", use_torify=False)
+
+    class _Response:
+        def __enter__(self) -> "_Response":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def geturl(self) -> str:
+            return "https://example.invalid/x.sha256"
+
+        def read(self, _size: int = -1) -> bytes:
+            return b"0" * (MAX_CHECKSUM_BYTES + 1)
+
+    with (
+        mock.patch("tails_cloner.download.open_https", return_value=_Response()),
+        pytest.raises(ValueError, match="unexpectedly large"),
+    ):
+        fetch_checksum_text("https://example.invalid/x.sha256", use_torify=False)
+
+
+def test_fetch_checksum_text_uses_tor_when_requested() -> None:
+    from tails_cloner.download import fetch_checksum_text
+
+    with mock.patch("tails_cloner.download.fetch_text_torified", return_value="abc") as torified:
+        assert fetch_checksum_text("https://example.invalid/x.sha256", use_torify=True) == "abc"
+    torified.assert_called_once_with("https://example.invalid/x.sha256", 30)

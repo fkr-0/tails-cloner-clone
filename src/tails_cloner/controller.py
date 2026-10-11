@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import subprocess
 from collections.abc import Callable
 from concurrent.futures import Executor, ThreadPoolExecutor
 from pathlib import Path
 from typing import Protocol
 
+from tails_cloner.blockdev import describe_command_failure
 from tails_cloner.models import AppState, BlockDevice, PostWriteOptions, SourceMode, VersionAssets
 from tails_cloner.planner import OperationKind, OperationPlan, OperationSource, plan_operation
 from tails_cloner.source import (
@@ -461,6 +463,29 @@ class ApplicationController:
         self._verify_recorded_image_integrity(actual_image_path)
         return actual_image_path
 
+    def _progress_relay(self, verb: str, progress_callback: ProgressCallback | None) -> ProgressCallback:
+        """Mirror write progress into shared state and forward it to the caller."""
+
+        def on_progress(message: str) -> None:
+            self.state.last_clone_progress = message
+            self.state.status_message = f"{verb}… {message}"
+            if progress_callback:
+                progress_callback(message)
+
+        return on_progress
+
+    @staticmethod
+    def _run_write_service(action: Callable[[], None]) -> None:
+        """Run a privileged write step, surfacing command stderr instead of a bare exit code."""
+        try:
+            action()
+        except subprocess.CalledProcessError as error:
+            raise RuntimeError(describe_command_failure(error)) from error
+        except FileNotFoundError as error:
+            if error.filename is None:  # e.g. a missing image file, not a missing program
+                raise
+            raise RuntimeError(describe_command_failure(error)) from error
+
     def clone_selected_image(
         self,
         image_path: str | None,
@@ -475,22 +500,20 @@ class ApplicationController:
                 "The running Tails medium is supported only as an upgrade source. "
                 "Choose a verified Tails IMG for install or reinstall."
             )
-        plan = self._require_valid_target_plan(OperationKind.INSTALL, device_path, image_path)
+        # Re-hash a verified image first: hashing a multi-GB file takes a while and must not
+        # sit between the final device revalidation and the write boundary.
         actual_image_path = self._resolve_source_image_path(image_path, "installing")
+        plan = self._require_valid_target_plan(OperationKind.INSTALL, device_path, actual_image_path)
         write_device_path = self._write_device_path(plan.target)
         self.state.status_message = f"Installing {actual_image_path} to {device_path}…"
 
-        def on_progress(message: str) -> None:
-            self.state.last_clone_progress = message
-            self.state.status_message = f"Installing… {message}"
-            if progress_callback:
-                progress_callback(message)
-
-        self.clone_service.clone_image(
-            image_path=actual_image_path,
-            device_path=write_device_path,
-            progress_callback=on_progress,
-            post_write_options=self.state.post_write_options,
+        self._run_write_service(
+            lambda: self.clone_service.clone_image(
+                image_path=actual_image_path,
+                device_path=write_device_path,
+                progress_callback=self._progress_relay("Installing", progress_callback),
+                post_write_options=self.state.post_write_options,
+            )
         )
         self.state.status_message = "Installation completed successfully."
 
@@ -508,25 +531,55 @@ class ApplicationController:
             self.upgrade_selected_from_running_live_source(device_path, progress_callback=progress_callback)
             return
 
-        plan = self._require_valid_target_plan(OperationKind.UPGRADE, device_path, image_path)
         actual_image_path = self._resolve_source_image_path(image_path, "upgrading")
+        plan = self._require_valid_target_plan(OperationKind.UPGRADE, device_path, actual_image_path)
         write_device_path = self._write_device_path(plan.target)
         self.state.status_message = (
             f"Upgrading {device_path} from {actual_image_path}; existing Persistent Storage, if present, will be preserved…"
         )
 
-        def on_progress(message: str) -> None:
-            self.state.last_clone_progress = message
-            self.state.status_message = f"Upgrading… {message}"
-            if progress_callback:
-                progress_callback(message)
-
-        self.clone_service.upgrade_image(
-            image_path=actual_image_path,
-            device_path=write_device_path,
-            progress_callback=on_progress,
+        self._run_write_service(
+            lambda: self.clone_service.upgrade_image(
+                image_path=actual_image_path,
+                device_path=write_device_path,
+                progress_callback=self._progress_relay("Upgrading", progress_callback),
+            )
         )
         self.state.status_message = "Upgrade completed successfully. Existing Persistent Storage, if present, was preserved."
+
+    def _upgrade_from_live_device(
+        self,
+        *,
+        source_path: str,
+        source_kind: str,
+        source_phrase: str,
+        completed_phrase: str,
+        device_path: str,
+        progress_callback: ProgressCallback | None,
+    ) -> None:
+        plan = self._require_valid_target_plan(OperationKind.UPGRADE, device_path)
+
+        source = self._find_device_in(self.state.devices, source_path)
+        if source is None:
+            raise RuntimeError(f"The {source_kind} Tails source device disappeared before the upgrade started.")
+        source_device = self._write_device_path(source)
+        write_device_path = self._write_device_path(plan.target)
+        self.state.status_message = (
+            f"Upgrading {device_path} from {source_phrase} {source_device}; "
+            "existing Persistent Storage, if present, will be preserved…"
+        )
+
+        self._run_write_service(
+            lambda: self.clone_service.upgrade_from_device(
+                source_device=source_device,
+                device_path=write_device_path,
+                progress_callback=self._progress_relay("Upgrading", progress_callback),
+            )
+        )
+        self.state.status_message = (
+            f"Upgrade completed successfully from {completed_phrase}. "
+            "Existing Persistent Storage, if present, was preserved."
+        )
 
     def upgrade_selected_from_running_live_source(
         self,
@@ -536,32 +589,13 @@ class ApplicationController:
         """Upgrade from the live medium currently running this Tails session."""
         if not self.state.running_tails_device:
             raise RuntimeError("The running Tails source device could not be determined.")
-        plan = self._require_valid_target_plan(OperationKind.UPGRADE, device_path)
-
-        source = self._find_device_in(self.state.devices, self.state.running_tails_device)
-        if source is None:
-            raise RuntimeError("The running Tails source device disappeared before the upgrade started.")
-        source_device = self._write_device_path(source)
-        write_device_path = self._write_device_path(plan.target)
-        self.state.status_message = (
-            f"Upgrading {device_path} from running Tails source {source_device}; "
-            "existing Persistent Storage, if present, will be preserved…"
-        )
-
-        def on_progress(message: str) -> None:
-            self.state.last_clone_progress = message
-            self.state.status_message = f"Upgrading… {message}"
-            if progress_callback:
-                progress_callback(message)
-
-        self.clone_service.upgrade_from_device(
-            source_device=source_device,
-            device_path=write_device_path,
-            progress_callback=on_progress,
-        )
-        self.state.status_message = (
-            "Upgrade completed successfully from the running Tails source. "
-            "Existing Persistent Storage, if present, was preserved."
+        self._upgrade_from_live_device(
+            source_path=self.state.running_tails_device,
+            source_kind="running",
+            source_phrase="running Tails source",
+            completed_phrase="the running Tails source",
+            device_path=device_path,
+            progress_callback=progress_callback,
         )
 
     def upgrade_selected_from_attached_live_source(
@@ -572,30 +606,11 @@ class ApplicationController:
         """Upgrade from an attached live source device without rewriting target persistence."""
         if not self.state.attached_live_source_device:
             raise RuntimeError("No attached Tails live source has been selected.")
-        plan = self._require_valid_target_plan(OperationKind.UPGRADE, device_path)
-
-        source = self._find_device_in(self.state.devices, self.state.attached_live_source_device)
-        if source is None:
-            raise RuntimeError("The attached Tails source device disappeared before the upgrade started.")
-        source_device = self._write_device_path(source)
-        write_device_path = self._write_device_path(plan.target)
-        self.state.status_message = (
-            f"Upgrading {device_path} from attached Tails live source {source_device}; "
-            "existing Persistent Storage, if present, will be preserved…"
-        )
-
-        def on_progress(message: str) -> None:
-            self.state.last_clone_progress = message
-            self.state.status_message = f"Upgrading… {message}"
-            if progress_callback:
-                progress_callback(message)
-
-        self.clone_service.upgrade_from_device(
-            source_device=source_device,
-            device_path=write_device_path,
-            progress_callback=on_progress,
-        )
-        self.state.status_message = (
-            "Upgrade completed successfully from attached live source. "
-            "Existing Persistent Storage, if present, was preserved."
+        self._upgrade_from_live_device(
+            source_path=self.state.attached_live_source_device,
+            source_kind="attached",
+            source_phrase="attached Tails live source",
+            completed_phrase="attached live source",
+            device_path=device_path,
+            progress_callback=progress_callback,
         )

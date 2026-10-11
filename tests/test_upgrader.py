@@ -333,3 +333,59 @@ def test_upgrade_from_device_rejects_same_source_and_target() -> None:
 
     with pytest.raises(RuntimeError, match="Source and target devices must be different"):
         upgrade_tails_system_partition_from_device("/dev/sdb", "/dev/sdb", runner=runner)
+
+
+def test_partition_copy_streams_dd_progress_with_production_runner(monkeypatch: pytest.MonkeyPatch) -> None:
+    from tails_cloner import upgrader
+
+    seen: list[list[str]] = []
+
+    def fake_stream(command: list[str], callback) -> int:  # type: ignore[no-untyped-def]
+        seen.append(command)
+        callback("1048576 bytes (1.0 MB, 1.0 MiB) copied, 1 s, 1.0 MB/s")
+        return 0
+
+    monkeypatch.setattr(upgrader, "run_streaming_command", fake_stream)
+    monkeypatch.setattr(upgrader, "build_privileged_command", lambda command, **_kw: ["pkexec", *command])
+    messages: list[str] = []
+
+    upgrader._copy_partition(
+        build_partition_upgrade_command("/dev/loop7p1", "/dev/sdb2"),
+        upgrader.run_command,
+        None,
+        messages.append,
+    )
+
+    assert seen[0][:2] == ["pkexec", "dd"]
+    assert messages == ["1048576 bytes (1.0 MB, 1.0 MiB) copied, 1 s, 1.0 MB/s"]
+
+
+def test_partition_copy_failure_reports_dd_stderr_tail(monkeypatch: pytest.MonkeyPatch) -> None:
+    from tails_cloner import upgrader
+
+    def fake_stream(_command: list[str], callback) -> int:  # type: ignore[no-untyped-def]
+        callback("dd: error writing '/dev/sdb2': No space left on device")
+        return 1
+
+    monkeypatch.setattr(upgrader, "run_streaming_command", fake_stream)
+
+    with pytest.raises(RuntimeError, match="status 1: dd: error writing.*No space left"):
+        upgrader._copy_partition(["dd"], upgrader.run_command, None, None)
+
+
+def test_failed_loop_detach_does_not_mask_the_real_upgrade_error(tmp_path: Path) -> None:
+    image = tmp_path / "tails.img"
+    image.write_bytes(b"image")
+
+    class DetachBreaksRunner(FakeRunner):
+        def __call__(self, command: list[str]) -> subprocess.CompletedProcess[str]:
+            if command[:2] == ["losetup", "--detach"]:
+                raise FileNotFoundError(2, "No such file or directory", "pkexec")
+            return super().__call__(command)
+
+    messages: list[str] = []
+    # /dev/sdh is mounted as the running live medium, so the upgrade itself is refused.
+    with pytest.raises(RuntimeError, match="currently running operating system"):
+        upgrade_tails_system_partition(image, "/dev/sdh", runner=DetachBreaksRunner(), progress_callback=messages.append)
+
+    assert any("failed to detach /dev/loop7" in message for message in messages)

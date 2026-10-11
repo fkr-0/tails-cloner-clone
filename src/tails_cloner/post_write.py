@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import time
 from collections.abc import Callable
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
-from tempfile import TemporaryDirectory
+from tempfile import mkdtemp
 
+from tails_cloner.blockdev import describe_command_failure
 from tails_cloner.boot_loader import apply_boot_loader_order_to_directory
 from tails_cloner.models import PostWriteOptions
 from tails_cloner.upgrader import build_privileged_command, find_tails_system_partition
@@ -56,42 +59,62 @@ def _apply_boot_loader_order(
     changed_paths: list[str] = []
     _emit(progress_callback, f"Applying experimental boot-loader order on {boot_partition}...")
 
-    with TemporaryDirectory(prefix="tails-cloner-boot-") as mount_dir:
-        mount_path = Path(mount_dir)
-        mounted = False
-        try:
-            mount_options = f"rw,uid={os.getuid()},gid={os.getgid()},umask=077"
-            _run_checked(
-                build_privileged_command(
-                    ["mount", "-o", mount_options, "--", boot_partition, str(mount_path)]
-                ),
-                run,
-            )
-            mounted = True
-            result = apply_boot_loader_order_to_directory(mount_path, options.boot_loader_order.entries)
-            if not result.files:
-                _emit(progress_callback, "No supported boot-loader config files found on boot partition.")
-                return []
-            for file_result in result.files:
-                rel_path = file_result.path.relative_to(mount_path)
-                if file_result.changed:
-                    backup_rel = file_result.backup_path.relative_to(mount_path) if file_result.backup_path else None
-                    changed_paths.append(str(rel_path))
-                    _emit(
-                        progress_callback,
-                        f"Reordered {rel_path}; backup: {backup_rel or 'none'}",
-                    )
-                elif file_result.unsupported_reason:
-                    _emit(progress_callback, f"Skipped {rel_path}: {file_result.unsupported_reason}")
-                else:
-                    _emit(progress_callback, f"No boot-loader order change needed for {rel_path}.")
-            return changed_paths
-        finally:
-            if mounted:
-                _run_checked(
-                    build_privileged_command(["umount", "--", str(mount_path)]),
-                    run,
+    # Not a TemporaryDirectory: if the unmount fails this directory is still the live
+    # target filesystem, and recursive cleanup would delete the files on the device.
+    mount_path = Path(mkdtemp(prefix="tails-cloner-boot-"))
+    mounted = False
+    try:
+        mount_options = f"rw,uid={os.getuid()},gid={os.getgid()},umask=077"
+        _run_checked(
+            build_privileged_command(["mount", "-o", mount_options, "--", boot_partition, str(mount_path)]),
+            run,
+        )
+        mounted = True
+        result = apply_boot_loader_order_to_directory(mount_path, options.boot_loader_order.entries)
+        if not result.files:
+            _emit(progress_callback, "No supported boot-loader config files found on boot partition.")
+            return []
+        for file_result in result.files:
+            rel_path = file_result.path.relative_to(mount_path)
+            if file_result.changed:
+                backup_rel = file_result.backup_path.relative_to(mount_path) if file_result.backup_path else None
+                changed_paths.append(str(rel_path))
+                _emit(
+                    progress_callback,
+                    f"Reordered {rel_path}; backup: {backup_rel or 'none'}",
                 )
+            elif file_result.unsupported_reason:
+                _emit(progress_callback, f"Skipped {rel_path}: {file_result.unsupported_reason}")
+            else:
+                _emit(progress_callback, f"No boot-loader order change needed for {rel_path}.")
+        return changed_paths
+    finally:
+        _release_mount(mount_path, mounted, progress_callback, run)
+
+
+def _release_mount(
+    mount_path: Path,
+    mounted: bool,
+    progress_callback: ProgressCallback,
+    run: CommandRunner,
+) -> None:
+    """Unmount and remove the scratch mount point without masking an in-flight error."""
+    error_in_flight = sys.exc_info()[0] is not None  # sampled before our own handler runs
+    if mounted:
+        try:
+            _run_checked(build_privileged_command(["umount", "--", str(mount_path)]), run)
+        except (OSError, subprocess.SubprocessError) as error:
+            reason = describe_command_failure(error)
+            _emit(
+                progress_callback,
+                f"Warning: boot partition mounted at {mount_path} could not be unmounted ({reason}). "
+                "Unmount it manually before removing the device.",
+            )
+            if not error_in_flight:
+                raise RuntimeError(f"Boot partition could not be unmounted: {reason}") from error
+            return  # keep the directory: it is still the live filesystem
+    with suppress(OSError):
+        mount_path.rmdir()
 
 
 def apply_post_write_options(

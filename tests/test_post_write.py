@@ -88,3 +88,75 @@ def test_apply_post_write_uses_partition_resolver_not_name_guessing(monkeypatch)
     apply_post_write_options("/dev/nvme0n1", options, command_runner=fake_run)
 
     assert commands[0][-2] == "/dev/mapper/custom-tails"
+
+
+def test_failed_unmount_never_deletes_files_under_the_mount_point(monkeypatch) -> None:
+    """If umount fails the directory is still the live target filesystem: do not rmtree it."""
+    import pytest
+
+    seen: dict[str, Path] = {}
+
+    class _Result:
+        files: list[object] = []
+
+    def fake_apply(root: Path, _desired_order: list[str]):
+        seen["root"] = root
+        (root / "syslinux.cfg").write_text("boot config on the mounted partition")
+        return _Result()
+
+    def fake_run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        if "umount" in command:
+            raise subprocess.CalledProcessError(32, command, stderr="target is busy")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("tails_cloner.post_write._find_tails_boot_partition", lambda _device: "/dev/sdb2")
+    monkeypatch.setattr("tails_cloner.post_write.build_privileged_command", lambda command: ["pkexec", *command])
+    monkeypatch.setattr("tails_cloner.post_write.apply_boot_loader_order_to_directory", fake_apply)
+    options = PostWriteOptions(
+        enabled=True,
+        sync_device=False,
+        settle_seconds=0,
+        boot_loader_order=BootLoaderOrderOptions(enabled=True, entries=["Tails"]),
+    )
+
+    try:
+        with pytest.raises(RuntimeError, match="target is busy"):
+            apply_post_write_options("/dev/sdb", options, command_runner=fake_run)
+        assert (seen["root"] / "syslinux.cfg").read_text() == "boot config on the mounted partition"
+    finally:
+        # Test hygiene only: the fake "mount" is an ordinary directory.
+        (seen["root"] / "syslinux.cfg").unlink(missing_ok=True)
+        seen["root"].rmdir()
+
+
+def test_unmount_failure_does_not_mask_the_original_error(monkeypatch) -> None:
+    import pytest
+
+    seen: dict[str, Path] = {}
+
+    def failing_apply(root: Path, _desired_order: list[str]):
+        seen["root"] = root
+        raise ValueError("unsupported boot configuration")
+
+    def fake_run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        if "umount" in command:
+            raise subprocess.CalledProcessError(32, command, stderr="target is busy")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("tails_cloner.post_write._find_tails_boot_partition", lambda _device: "/dev/sdb2")
+    monkeypatch.setattr("tails_cloner.post_write.build_privileged_command", lambda command: ["pkexec", *command])
+    monkeypatch.setattr("tails_cloner.post_write.apply_boot_loader_order_to_directory", failing_apply)
+    options = PostWriteOptions(
+        enabled=True,
+        sync_device=False,
+        settle_seconds=0,
+        boot_loader_order=BootLoaderOrderOptions(enabled=True, entries=["Tails"]),
+    )
+    messages: list[str] = []
+
+    try:
+        with pytest.raises(ValueError, match="unsupported boot configuration"):
+            apply_post_write_options("/dev/sdb", options, messages.append, command_runner=fake_run)
+        assert any("could not be unmounted" in message for message in messages)
+    finally:
+        seen["root"].rmdir()

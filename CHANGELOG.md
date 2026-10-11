@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### Review Fixes: Safety and Reliability
+
+- Never delete files on a still-mounted boot partition: the optional boot-loader reordering now uses a plain scratch mount point instead of a recursively cleaned temporary directory, keeps the directory when `umount` fails, reports it, and no longer lets an unmount failure mask the original error.
+- Treat a whole-disk filesystem as part of the target in install preparation: its mount is now unmounted before `dd`, and a whole disk mounted as the running system (or live medium) is refused, matching how partitions were already handled.
+- Re-verify a previously verified image before the final device re-enumeration instead of after it, so a slow multi-GB hash no longer sits between the last hot-swap identity check and the write boundary.
+- Surface the failing command's stderr (for example a busy `umount`) for install/upgrade failures instead of a bare exit status, and map those failures to the CLI's install/upgrade failure exit codes rather than the internal-error code.
+- Fix whole-device install preparation reading a human-readable lsblk size (`14.9G`) as an integer: request `--bytes` and report an unreadable size as a normal failure instead of an internal error.
+- Report oversized signature/metadata responses and HTTPS-downgrade redirects during downloads as download failures instead of leaking raw `ValueError`s.
+- A failed loop-device detach during cleanup can no longer replace the real upgrade error with a different exception.
+- The GUI's suggested-checksum preview now uses the shared Tor-aware, HTTPS-only, size-limited fetch (it previously used a direct `urlopen`, bypassing Tor routing), matches the checksum entry to the selected image filename, and ignores responses for a version the user has since left.
+
+### Review Fixes: Interface and UX
+
+- Show a determinate progress bar with a percentage for whole-device installs and stream `dd` progress for partition upgrades (previously silent for the whole copy); GUI progress events now carry `bytes_written` like the CLI's.
+- Put the write form (target, plan, action button) at the top of the Write tab; the experimental boot-loader options sit below it and stay collapsed until enabled, so the primary action no longer starts below the fold.
+- Destructive confirmation dialogs now default to "No"; `Esc` no longer quits the application (use `Ctrl+Q` or Close); starting a write is refused while a verified download is running.
+- Wrapped labels reflow with the window width instead of using fixed pixel wrap lengths; add a "Continue to Write" action on the Source tab; label the version-catalog URL; fix the "Inofficial" typo and replace the install warning's flippant wording with a plain instruction.
+- Keep the action warning style in sync after validating an attached live source, and drop a duplicate version-list key handler.
+
+### Architecture
+
+- Add `tails_cloner.blockdev` as the single home of the protected-mount policy, lsblk tree walking, streamed command execution, `dd` progress parsing, and command-failure formatting, replacing three copy-pasted implementations in discovery, install, and upgrade code.
+- Collapse the controller's three near-identical write paths onto shared progress-relay, failure-translation, and live-source-upgrade helpers while preserving all status strings.
+
 ### First-class AppImage CLI
 
 - Expand the AppImage/`tails-cloner-clone` operator surface from read-only seeds into catalog/version inspection, verified downloads, current-system/status inspection, rich device inspection, install/upgrade planning, and destructive install/upgrade execution through the same controller/planner/creator/upgrader code paths as the GUI.

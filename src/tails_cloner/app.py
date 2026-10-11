@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sys
 import tkinter as tk
 import webbrowser
 from collections.abc import Callable
@@ -12,8 +11,8 @@ from queue import Empty, SimpleQueue
 from tkinter import filedialog, messagebox, ttk
 from typing import Literal
 from urllib.parse import urlparse
-from urllib.request import urlopen
 
+from tails_cloner.blockdev import parse_dd_bytes
 from tails_cloner.boot_loader import discover_boot_loader_entries
 from tails_cloner.cli_events import CliError, CommandResult, EventSink, ExitCode
 from tails_cloner.config import (
@@ -30,10 +29,14 @@ from tails_cloner.download import (
     DownloadVerificationError,
     RemoteImageRequest,
     VerifiedImageDownloader,
+    bundled_asset_path,
+    default_download_directory,
+    fetch_checksum_text,
     gpg_available,
     require_https_url,
 )
 from tails_cloner.models import SourceMode
+from tails_cloner.network import should_use_torify
 from tails_cloner.planner import OperationKind, OperationPlan
 from tails_cloner.theme import (
     configure_canvas_widget,
@@ -44,7 +47,7 @@ from tails_cloner.theme import (
     configure_ttk_style,
     palette_for,
 )
-from tails_cloner.verification import sha256_file
+from tails_cloner.verification import parse_sha256_text, sha256_file
 
 
 class TailsClonerApp(tk.Tk):
@@ -67,7 +70,7 @@ class TailsClonerApp(tk.Tk):
         self.option_add("*Font", f"TkDefaultFont {FONT_SIZE_MEDIUM}")
 
         self.status_var = tk.StringVar(value=self.controller.state.status_message)
-        self.remote_url_var = tk.StringVar(value=self.remote_index_url)
+        self.remote_url_var = tk.StringVar(value=f"Version catalog: {self.remote_index_url}")
         self.selected_version_var = tk.StringVar()
         self.selected_iso_url_var = tk.StringVar()
         self.selected_image_url_var = tk.StringVar()
@@ -106,6 +109,7 @@ class TailsClonerApp(tk.Tk):
         self._checksum_job_id = 0
         self._ui_events: SimpleQueue[Callable[[], None]] = SimpleQueue()
         self._write_in_progress = False
+        self._write_total_bytes = 0
         self._download_in_progress = False
         self._write_control_states: list[tuple[tk.Widget, str]] = []
         self._scroll_regions: list[tuple[tk.Canvas, ttk.Frame]] = []
@@ -198,6 +202,19 @@ class TailsClonerApp(tk.Tk):
         else:
             self._emit_progress(progress.message, **fields)
 
+    def _show_write_tab(self) -> None:
+        self.notebook.select(1)  # type: ignore[no-untyped-call]
+
+    @staticmethod
+    def _autowrap(label: ttk.Label) -> ttk.Label:
+        """Re-wrap a label to its allocated width so text reflows when the window is resized."""
+        label.bind(
+            "<Configure>",
+            lambda event: label.configure(wraplength=max(event.width - 4, 80)),
+            add="+",
+        )
+        return label
+
     def _add_scrollable_tab(self, notebook: ttk.Notebook, text: str) -> tuple[ttk.Frame, tk.Canvas]:
         shell = ttk.Frame(notebook)
         shell.columnconfigure(0, weight=1)
@@ -281,7 +298,6 @@ class TailsClonerApp(tk.Tk):
         self.bind("<Control-r>", lambda _event: self._submit_background_if_idle(self._refresh_versions_task))
         self.bind("<Control-d>", lambda _event: self._submit_background_if_idle(self.controller.refresh_devices))
         self.bind("<Control-q>", lambda _event: self._on_close())
-        self.bind("<Escape>", lambda _event: self._on_close())
         self.bind("<MouseWheel>", self._on_content_mousewheel, add="+")
         self.bind("<Button-4>", self._on_content_mousewheel, add="+")
         self.bind("<Button-5>", self._on_content_mousewheel, add="+")
@@ -300,7 +316,7 @@ class TailsClonerApp(tk.Tk):
         info_row.grid(row=1, column=0, columnspan=5, sticky="w", pady=(4, 0))
         ttk.Label(
             info_row,
-            text="Inofficial(!) Tails download/install/update tool. Refer to",
+            text="Unofficial Tails download, install and upgrade tool. Official downloads:",
             style="Muted.TLabel",
         ).grid(row=0, column=0, sticky="w")
         self.downloads_link_label = tk.Label(
@@ -340,6 +356,7 @@ class TailsClonerApp(tk.Tk):
 
         notebook = ttk.Notebook(self)
         notebook.grid(row=1, column=0, sticky="nsew", padx=16, pady=(0, 8))
+        self.notebook = notebook
         tab_source, self.source_scroll_canvas = self._add_scrollable_tab(notebook, "Source")
         tab_write, self.write_scroll_canvas = self._add_scrollable_tab(notebook, "Write")
         self.write_scroll_content = tab_write
@@ -347,7 +364,7 @@ class TailsClonerApp(tk.Tk):
         tab_source.columnconfigure(1, weight=1)
         tab_source.rowconfigure(1, weight=1)
         tab_write.columnconfigure(0, weight=1)
-        tab_write.rowconfigure(1, weight=1)
+        tab_write.rowconfigure(0, weight=1)
 
         # Source selection panel (tab1 top-left)
         source_frame = ttk.LabelFrame(tab_source, text="Source", padding=12)
@@ -372,12 +389,14 @@ class TailsClonerApp(tk.Tk):
             command=self._start_remote_download,
         )
         self.download_button.grid(row=1, column=0, sticky="w", padx=(20, 0), pady=(4, 0))
-        ttk.Label(
-            self.source_remote_frame,
-            textvariable=self.source_status_var,
-            style="Muted.TLabel",
-            wraplength=520,
-        ).grid(row=2, column=0, sticky="w", padx=(20, 0), pady=(2, 0))
+        self._autowrap(
+            ttk.Label(
+                self.source_remote_frame,
+                textvariable=self.source_status_var,
+                style="Muted.TLabel",
+                justify="left",
+            )
+        ).grid(row=2, column=0, sticky="ew", padx=(20, 0), pady=(2, 0))
 
         # Running Tails source option
         self.running_tails_frame = ttk.Frame(source_frame)
@@ -426,12 +445,14 @@ class TailsClonerApp(tk.Tk):
             command=self._validate_attached_live_source,
         )
         self.attached_source_validate_button.grid(row=1, column=2, rowspan=2, sticky="ns", padx=(8, 0), pady=(4, 0))
-        ttk.Label(
-            self.source_attached_frame,
-            textvariable=self.attached_source_status_var,
-            style="Muted.TLabel",
-            wraplength=520,
-        ).grid(row=3, column=0, columnspan=3, sticky="w", padx=(20, 0), pady=(4, 0))
+        self._autowrap(
+            ttk.Label(
+                self.source_attached_frame,
+                textvariable=self.attached_source_status_var,
+                style="Muted.TLabel",
+                justify="left",
+            )
+        ).grid(row=3, column=0, columnspan=3, sticky="ew", padx=(20, 0), pady=(4, 0))
 
         # Local file source option
         self.source_local_frame = ttk.Frame(source_frame)
@@ -452,7 +473,18 @@ class TailsClonerApp(tk.Tk):
 
         source_details = ttk.LabelFrame(tab_source, text="Current source details", padding=12)
         source_details.grid(row=0, column=1, sticky="nsew", padx=(8, 0), pady=(0, 8))
-        ttk.Label(source_details, textvariable=self.source_details_var, wraplength=500, justify="left").grid(row=0, column=0, sticky="w")
+        source_details.columnconfigure(0, weight=1)
+        source_details.rowconfigure(0, weight=1)
+        self._autowrap(ttk.Label(source_details, textvariable=self.source_details_var, justify="left")).grid(
+            row=0, column=0, sticky="new"
+        )
+        self.continue_button = ttk.Button(
+            source_details,
+            text="Continue to Write  →",
+            style="Accent.TButton",
+            command=self._show_write_tab,
+        )
+        self.continue_button.grid(row=1, column=0, sticky="e", pady=(8, 0))
 
         # Remote versions panel (tab1 bottom-left)
         left = ttk.LabelFrame(tab_source, text="Remote versions", padding=12)
@@ -470,9 +502,6 @@ class TailsClonerApp(tk.Tk):
         self.versions_list = tk.Listbox(left, exportselection=False, activestyle="none", font=("TkDefaultFont", FONT_SIZE_MEDIUM))
         self.versions_list.grid(row=2, column=0, sticky="nsew")
         self.versions_list.bind("<<ListboxSelect>>", self._on_version_selected)
-        # Allow keyboard navigation in versions list
-        self.versions_list.bind("<KeyRelease-Up>", self._on_version_key_nav)
-        self.versions_list.bind("<KeyRelease-Down>", self._on_version_key_nav)
 
         details = ttk.Frame(tab_source)
         details.grid(row=1, column=1, sticky="nsew", padx=(8, 0), pady=(0, 8))
@@ -491,8 +520,9 @@ class TailsClonerApp(tk.Tk):
         self.suggested_checksum_entry.grid(row=6, column=1, sticky="ew", pady=(0, 6))
         self._add_readonly_row(details_box, 7, "Local checksum", self.local_checksum_var)
 
-        exp_panel = ttk.LabelFrame(tab_write, text="Experimental", padding=12)
-        exp_panel.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        # The primary write form comes first; experimental options sit below it.
+        exp_panel = ttk.LabelFrame(tab_write, text="Experimental options", padding=12)
+        exp_panel.grid(row=1, column=0, sticky="ew", pady=(8, 0))
         exp_panel.columnconfigure(0, weight=1)
         self.experimental_toggle = ttk.Checkbutton(
             exp_panel,
@@ -504,18 +534,20 @@ class TailsClonerApp(tk.Tk):
 
         self.experimental_notebook = ttk.Notebook(exp_panel)
         self.experimental_notebook.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        self.experimental_notebook.grid_remove()  # shown only while the toggle is on
         self.boot_order_tab = ttk.Frame(self.experimental_notebook, padding=8)
         self.experimental_notebook.add(self.boot_order_tab, text="Boot-loader order")
         self.boot_order_tab.columnconfigure(0, weight=1)
         self.boot_order_tab.columnconfigure(1, weight=0)
         self.boot_order_tab.rowconfigure(1, weight=1)
 
-        ttk.Label(
-            self.boot_order_tab,
-            text="Parse boot entries from the selected image, then reorder, remove, or add entries.",
-            wraplength=720,
-            justify="left",
-        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
+        self._autowrap(
+            ttk.Label(
+                self.boot_order_tab,
+                text="Parse boot entries from the selected image, then reorder, remove, or add entries.",
+                justify="left",
+            )
+        ).grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 6))
         self.boot_order_list = tk.Listbox(self.boot_order_tab, height=5, exportselection=False, activestyle="none")
         self.boot_order_list.grid(row=1, column=0, sticky="nsew")
         boot_buttons = ttk.Frame(self.boot_order_tab)
@@ -539,18 +571,21 @@ class TailsClonerApp(tk.Tk):
             command=self._start_parse_boot_order_entries,
         )
         self.boot_order_parse_button.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(8, 0))
-        ttk.Label(
-            self.boot_order_tab,
-            textvariable=self.boot_loader_status_var,
-            style="Muted.TLabel",
-            wraplength=720,
-            justify="left",
-        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        self._autowrap(
+            ttk.Label(
+                self.boot_order_tab,
+                textvariable=self.boot_loader_status_var,
+                style="Muted.TLabel",
+                justify="left",
+            )
+        ).grid(row=4, column=0, columnspan=2, sticky="ew", pady=(6, 0))
 
-        right = ttk.LabelFrame(tab_write, text="Write image to device", padding=12)
-        right.grid(row=1, column=0, sticky="nsew")
+        right = ttk.LabelFrame(tab_write, text="Write to device", padding=12)
+        right.grid(row=0, column=0, sticky="nsew")
         right.columnconfigure(1, weight=1)
-        ttk.Label(right, textvariable=self.tab2_source_var, wraplength=600, justify="left").grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
+        self._autowrap(ttk.Label(right, textvariable=self.tab2_source_var, justify="left")).grid(
+            row=0, column=0, columnspan=3, sticky="ew", pady=(0, 8)
+        )
         mode_row = ttk.Frame(right)
         mode_row.grid(row=1, column=0, columnspan=3, sticky="w", pady=(0, 10))
         self.install_action_radio = ttk.Radiobutton(
@@ -575,20 +610,18 @@ class TailsClonerApp(tk.Tk):
         self.device_combo.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(4, 0))
         self.device_combo.bind("<<ComboboxSelected>>", self._on_device_selected)
 
-        self.device_status_label = ttk.Label(right, text="Idle", style="Muted.TLabel", wraplength=320)
-        self.device_status_label.grid(row=4, column=0, columnspan=3, sticky="w", pady=(12, 0))
+        self.device_status_label = self._autowrap(ttk.Label(right, text="Idle", style="Muted.TLabel", justify="left"))
+        self.device_status_label.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(12, 0))
 
-        self.device_warning_label = ttk.Label(right, text="", style="Warning.TLabel", wraplength=320)
-        self.device_warning_label.grid(row=5, column=0, columnspan=3, sticky="w", pady=(4, 0))
-
-        self.upgrade_plan_label = ttk.Label(
-            right,
-            textvariable=self.upgrade_plan_var,
-            style="Info.TLabel",
-            wraplength=320,
-            justify="left",
+        self.device_warning_label = self._autowrap(
+            ttk.Label(right, text="", style="Warning.TLabel", justify="left")
         )
-        self.upgrade_plan_label.grid(row=6, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        self.device_warning_label.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(4, 0))
+
+        self.upgrade_plan_label = self._autowrap(
+            ttk.Label(right, textvariable=self.upgrade_plan_var, style="Info.TLabel", justify="left")
+        )
+        self.upgrade_plan_label.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(8, 0))
 
         # Progress bar for clone operation
         self.progress_frame = ttk.Frame(right)
@@ -596,8 +629,10 @@ class TailsClonerApp(tk.Tk):
         self.progress_frame.columnconfigure(0, weight=1)
         self.progress_bar = ttk.Progressbar(self.progress_frame, mode="indeterminate")
         self.progress_bar.grid(row=0, column=0, sticky="ew")
-        self.progress_label = ttk.Label(self.progress_frame, text="", style="Muted.TLabel", wraplength=700)
-        self.progress_label.grid(row=1, column=0, sticky="w", pady=(4, 0))
+        self.progress_label = self._autowrap(
+            ttk.Label(self.progress_frame, text="", style="Muted.TLabel", justify="left")
+        )
+        self.progress_label.grid(row=1, column=0, sticky="ew", pady=(4, 0))
         progress_log_frame = ttk.Frame(self.progress_frame)
         progress_log_frame.grid(row=2, column=0, sticky="nsew", pady=(6, 0))
         progress_log_frame.columnconfigure(0, weight=1)
@@ -626,14 +661,10 @@ class TailsClonerApp(tk.Tk):
         # Make clone button the default (activated by Enter)
         self.clone_button.bind("<Return>", lambda _event: self._confirm_and_clone())
         warning_text = self._install_warning_text()
-        self.install_warning_label = ttk.Label(
-            right,
-            text=warning_text,
-            style="Warning.TLabel",
-            wraplength=340,
-            justify="left",
+        self.install_warning_label = self._autowrap(
+            ttk.Label(right, text=warning_text, style="Warning.TLabel", justify="left")
         )
-        self.install_warning_label.grid(row=9, column=0, columnspan=3, sticky="w", pady=(12, 0))
+        self.install_warning_label.grid(row=9, column=0, columnspan=3, sticky="ew", pady=(12, 0))
 
         ttk.Label(self, textvariable=self.status_var, relief="sunken", anchor="w", padding=(12, 8)).grid(
             row=2,
@@ -740,9 +771,7 @@ class TailsClonerApp(tk.Tk):
         )
 
     def _asset_path(self, name: str) -> Path:
-        if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
-            return Path(sys._MEIPASS) / "assets" / name
-        return Path(__file__).resolve().parents[2] / "assets" / name
+        return bundled_asset_path(name)
 
     def _set_window_icon(self) -> None:
         icon_candidates = [
@@ -876,7 +905,14 @@ class TailsClonerApp(tk.Tk):
             self.tab2_source_var.set(f"Source: {self.image_path_var.get().strip() or 'not selected'}")
 
     def _sync_experimental_state(self) -> None:
-        state = "normal" if self.experimental_enabled_var.get() else "disabled"
+        enabled = self.experimental_enabled_var.get()
+        state = "normal" if enabled else "disabled"
+        notebook = self.__dict__.get("experimental_notebook")
+        if notebook is not None:
+            if enabled:
+                notebook.grid()
+            else:
+                notebook.grid_remove()
         widgets: list[tk.Widget] = [
             self.boot_order_list,
             self.boot_order_entry,
@@ -976,7 +1012,7 @@ class TailsClonerApp(tk.Tk):
     def _install_warning_text(self) -> str:
         return (
             "Install/Reinstall writes a complete image to the selected block device. "
-            "Treat it like a loaded weapon and verify the target path every time.\n\n"
+            "Check the device path, size and model carefully before you continue.\n\n"
             "All data on the target device, including Persistent Storage, will be permanently lost."
         )
 
@@ -1041,18 +1077,21 @@ class TailsClonerApp(tk.Tk):
         state.verified_image_source_url = ""
         state.verified_image_signing_fingerprint = ""
 
-    def _fetch_suggested_checksum(self, url: str) -> None:
-        if not url:
-            self._queue_ui(lambda: self.suggested_checksum_var.set(""))
-            return
-        try:
-            with urlopen(url, timeout=20) as response:  # noqa: S310 - remote metadata chosen by user context
-                content = response.read().decode("utf-8", errors="replace")
-            token = content.strip().split()[0] if content.strip() else ""
-            checksum = token if len(token) >= 32 else ""
-        except Exception:
-            checksum = ""
-        self._queue_ui(partial(self.suggested_checksum_var.set, checksum))
+    def _fetch_suggested_checksum(self, url: str, image_url: str = "") -> None:
+        checksum = ""
+        if url:
+            try:
+                text = fetch_checksum_text(url, use_torify=should_use_torify())
+                filename = Path(urlparse(image_url).path).name or None
+                checksum = parse_sha256_text(text, expected_filename=filename)
+            except Exception:  # noqa: BLE001 - a missing preview must never disturb the UI
+                checksum = ""
+        self._queue_ui(partial(self._apply_suggested_checksum, url, checksum))
+
+    def _apply_suggested_checksum(self, url: str, checksum: str) -> None:
+        # Ignore a slow response for a version the user has already moved away from.
+        if url == self.controller.state.selected_checksum_url.strip():
+            self.suggested_checksum_var.set(checksum)
 
     def _add_readonly_row(self, parent: tk.Misc, row: int, label: str, variable: tk.StringVar) -> None:
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="nw", pady=(0, 6), padx=(0, 8))
@@ -1076,15 +1115,6 @@ class TailsClonerApp(tk.Tk):
         self.controller.select_version(version)
         self._sync_selected_version_fields()
 
-    def _on_version_key_nav(self, _event: tk.Event | None = None) -> None:
-        """Handle keyboard navigation in versions list."""
-        selection = self.versions_list.curselection()  # type: ignore[no-untyped-call]
-        if not selection:
-            return
-        version = self.versions_list.get(selection[0])
-        self.controller.select_version(version)
-        self._sync_selected_version_fields()
-
     def _on_source_mode_changed(self) -> None:
         """Handle source mode radio button change."""
         mode_str = self.source_mode_var.get()
@@ -1095,6 +1125,7 @@ class TailsClonerApp(tk.Tk):
         elif mode_str == "attached":
             self.controller.set_source_mode(SourceMode.ATTACHED)
             self.action_mode_var.set("upgrade")
+            self._on_action_mode_changed()
         elif mode_str == "local":
             self.controller.set_source_mode(SourceMode.LOCAL)
         elif mode_str == "remote":
@@ -1110,7 +1141,7 @@ class TailsClonerApp(tk.Tk):
             source = self.controller.set_attached_live_source(device_path, mount_point)
             self.attached_source_status_var.set(f"Validated attached Tails {source.version or 'unknown'} from {device_path}")
             self.action_mode_var.set("upgrade")
-            self._sync_devices()
+            self._on_action_mode_changed()
         except Exception as error:  # noqa: BLE001 - visible UI feedback
             self.attached_source_status_var.set(f"Attached source validation failed: {error}")
             messagebox.showerror("Attached source validation failed", str(error))
@@ -1172,7 +1203,7 @@ class TailsClonerApp(tk.Tk):
         filename: str,
         version: str = "",
     ) -> None:
-        cache_dir = Path.home() / ".cache" / "tails-cloner-clone" / "downloads"
+        cache_dir = default_download_directory()
         cache_dir.mkdir(parents=True, exist_ok=True)
         target_path = cache_dir / filename
         try:
@@ -1288,6 +1319,12 @@ class TailsClonerApp(tk.Tk):
         self._update_device_warnings_and_button()
 
     def _confirm_and_clone(self) -> None:
+        if self.__dict__.get("_download_in_progress", False):
+            messagebox.showinfo(
+                "Download in progress",
+                "Wait for the verified image download to finish before writing to a device.",
+            )
+            return
         selected_device_name = self.device_var.get()
         device_path = self._device_labels.get(selected_device_name, "")
 
@@ -1327,25 +1364,25 @@ class TailsClonerApp(tk.Tk):
             self._update_device_warnings_and_button()
             return
 
-        confirmed = messagebox.askyesno(plan.confirmation_title, plan.confirmation_message, icon=messagebox.WARNING)
+        # Default to "No": a stray Enter/Space on a destructive prompt must never confirm it.
+        confirmed = messagebox.askyesno(
+            plan.confirmation_title,
+            plan.confirmation_message,
+            icon=messagebox.WARNING,
+            default=messagebox.NO,
+        )
         if not confirmed:
             return
         is_upgrade = plan.operation == OperationKind.UPGRADE
         operation_label = "upgrade" if is_upgrade else "installation"
-        sink = self._event_sink()
-        if sink is not None:
-            sink.write_boundary(
-                "Operator confirmed destructive GUI operation; controller will revalidate identities before writing",
-                activity="write",
-                operation=plan.operation.value,
-                target=plan.target.stable_path or plan.target.path,
-                destructive_scope=plan.destructive_scope,
-                persistence_behavior=plan.persistence_behavior,
-            )
+        self._emit_write_boundary(plan)
+        # A whole-device install has a known size to copy; partition upgrades do not.
+        self._write_total_bytes = 0 if is_upgrade else plan.source.size_bytes
         self._write_in_progress = True
         self._set_write_controls_locked(True)
         self._show_clone_progress(True, operation_label=operation_label)
         self.clone_button.config(state="disabled")
+        self.progress_bar.configure(mode="indeterminate", value=0)
         self.progress_bar.start(10)
         self.controller.executor.submit(self._run_write_operation, image_path, device_path, is_upgrade)
 
@@ -1360,12 +1397,19 @@ class TailsClonerApp(tk.Tk):
 
         try:
             def on_progress(message: str) -> None:
+                fields: dict[str, object] = {}
+                written = parse_dd_bytes(message)
+                if written is not None:
+                    fields["bytes_written"] = written
                 self._emit_progress(
                     message,
                     activity="write",
                     operation="upgrade" if is_upgrade else "install",
+                    **fields,
                 )
                 self._queue_ui(partial(self._set_progress_text, message))
+                if written is not None:
+                    self._queue_ui(partial(self._set_progress_fraction, written, message))
 
             if is_upgrade:
                 self.controller.upgrade_selected_image(image_path, device_path, progress_callback=on_progress)
@@ -1411,6 +1455,18 @@ class TailsClonerApp(tk.Tk):
             self.progress_log.configure(state="disabled")
         if should_follow:
             self.progress_log.see("end")
+
+    def _set_progress_fraction(self, bytes_written: int, message: str) -> None:
+        """Switch to a determinate bar once dd reports bytes and the total is known."""
+        total = self.__dict__.get("_write_total_bytes", 0)
+        if total <= 0 or not self.__dict__.get("_write_in_progress", False):
+            return
+        if str(self.progress_bar.cget("mode")) != "determinate":
+            self.progress_bar.stop()
+            self.progress_bar.configure(mode="determinate", maximum=total)
+        written = min(bytes_written, total)
+        self.progress_bar.configure(value=written)
+        self.progress_label.configure(text=f"{written * 100 // total}% · {message}")
 
     @staticmethod
     def _progress_view_is_at_bottom(view: tuple[float, float]) -> bool:
@@ -1657,7 +1713,9 @@ class TailsClonerApp(tk.Tk):
         self.selected_image_url_var.set(self.controller.state.selected_image_url)
         self.selected_signature_url_var.set(self.controller.state.selected_signature_url)
         checksum_url = self.controller.state.selected_checksum_url.strip()
-        self.controller.executor.submit(self._fetch_suggested_checksum, checksum_url)
+        self.controller.executor.submit(
+            self._fetch_suggested_checksum, checksum_url, self.controller.state.selected_image_url
+        )
 
     def _sync_loading_labels(self) -> None:
         version_label = "Refreshing remote versions…" if self.controller.state.versions_loading else "Remote versions idle"

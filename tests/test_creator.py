@@ -301,3 +301,61 @@ def test_clone_failure_does_not_run_post_write(tmp_path: Path) -> None:
         )
 
     assert post_write_called is False
+
+
+def _single_disk_runner(root: dict[str, object]) -> Callable[..., subprocess.CompletedProcess[str]]:
+    def fake_run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"blockdevices": [root]}), stderr="")
+
+    return fake_run
+
+
+def test_whole_disk_filesystem_mount_is_unmounted_before_dd() -> None:
+    root = {
+        "path": "/dev/sdb",
+        "name": "sdb",
+        "type": "disk",
+        "ro": False,
+        "size": 32 * 1024**3,
+        "fstype": "vfat",
+        "mountpoints": ["/media/user/STICK"],
+    }
+
+    commands = inspect_target_deactivation_commands("/dev/sdb", _single_disk_runner(root))
+
+    assert commands == [["pkexec", "umount", "--", "/media/user/STICK"]]
+
+
+def test_whole_disk_mounted_as_running_system_is_refused() -> None:
+    root = {
+        "path": "/dev/sdb",
+        "name": "sdb",
+        "type": "disk",
+        "ro": False,
+        "size": 32 * 1024**3,
+        "fstype": "ext4",
+        "mountpoints": ["/"],
+    }
+
+    with pytest.raises(RuntimeError, match="currently running operating system"):
+        inspect_target_deactivation_commands("/dev/sdb", _single_disk_runner(root))
+
+
+def test_target_inspection_requests_byte_sizes_from_lsblk() -> None:
+    seen: list[list[str]] = []
+
+    def fake_run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        seen.append(command)
+        root = {"path": "/dev/sdb", "type": "disk", "ro": False, "size": 32 * 1024**3}
+        return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"blockdevices": [root]}), stderr="")
+
+    inspect_target_deactivation_commands("/dev/sdb", fake_run)
+
+    assert "--bytes" in seen[0]
+
+
+def test_target_inspection_reports_unparseable_size_as_runtime_error() -> None:
+    root = {"path": "/dev/sdb", "type": "disk", "ro": False, "size": "14.9G"}
+
+    with pytest.raises(RuntimeError, match="target size"):
+        inspect_target_deactivation_commands("/dev/sdb", _single_disk_runner(root))

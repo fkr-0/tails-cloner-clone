@@ -678,5 +678,78 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(controller.state.status_message, "Attached live source cleared.")
 
 
+class CallOrderTests(unittest.TestCase):
+    def _controller(self, clone_service, device_service):
+        controller = ApplicationController(
+            state=AppState(),
+            version_service=FakeVersionService(),
+            device_service=device_service,
+            clone_service=clone_service,
+            executor=ThreadPoolExecutor(max_workers=1),
+        )
+        self.addCleanup(controller.shutdown)
+        return controller
+
+    def test_image_integrity_is_rechecked_before_final_device_revalidation(self) -> None:
+        events: list[str] = []
+
+        class RecordingDevices(FakeDeviceService):
+            def list_devices(self):
+                events.append("enumerate")
+                return super().list_devices()
+
+        with TemporaryDirectory() as tmpdir:
+            image = Path(tmpdir) / "tails.img"
+            image.write_bytes(b"verified image")
+            controller = self._controller(FakeCloneService(), RecordingDevices())
+            controller.state.verified_image_path = str(image)
+            controller.state.verified_image_sha256 = hashlib.sha256(b"verified image").hexdigest()
+            controller.discover_devices()
+            events.clear()
+
+            import tails_cloner.controller as controller_module
+
+            real_verify = controller_module.verify_sha256
+
+            def recording_verify(*args, **kwargs):
+                events.append("hash")
+                return real_verify(*args, **kwargs)
+
+            controller_module.verify_sha256 = recording_verify
+            self.addCleanup(setattr, controller_module, "verify_sha256", real_verify)
+            controller.clone_selected_image(str(image), "/dev/sdb")
+
+        # The slow hash must come first so no long operation sits between the last
+        # hot-swap identity check and the write.
+        self.assertLess(events.index("hash"), events.index("enumerate"))
+
+    def test_command_failure_surfaces_stderr_instead_of_bare_exit_code(self) -> None:
+        import subprocess
+
+        class FailingCloneService(FakeCloneService):
+            def upgrade_image(self, **_kwargs):
+                raise subprocess.CalledProcessError(
+                    32, ["pkexec", "umount", "--", "/media/x"], stderr="umount: /media/x: target is busy.\n"
+                )
+
+        with TemporaryDirectory() as tmpdir:
+            image = Path(tmpdir) / "tails.img"
+            image.write_bytes(b"image")
+            controller = self._controller(FailingCloneService(), FakeDeviceService())
+            controller.discover_devices()
+            with self.assertRaisesRegex(RuntimeError, "target is busy"):
+                controller.upgrade_selected_image(str(image), "/dev/sdb")
+
+    def test_missing_image_file_is_not_misreported_as_missing_program(self) -> None:
+        class MissingImageService(FakeCloneService):
+            def upgrade_image(self, **kwargs):
+                raise FileNotFoundError(kwargs["image_path"])
+
+        controller = self._controller(MissingImageService(), FakeDeviceService())
+        controller.discover_devices()
+        with self.assertRaises(FileNotFoundError):
+            controller.upgrade_selected_image("/nonexistent/tails.img", "/dev/sdb")
+
+
 if __name__ == "__main__":
     unittest.main()

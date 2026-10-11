@@ -716,5 +716,131 @@ class AppWindowClassTests(unittest.TestCase):
         self.assertIn("Persistent Storage preserved if present", app.upgrade_plan_var.get())
 
 
+class GuiSafetyAndUxRegressionTests(unittest.TestCase):
+    def test_escape_key_does_not_quit_the_application(self) -> None:
+        build_source = inspect.getsource(TailsClonerApp._build_ui)
+
+        self.assertNotIn("<Escape>", build_source)
+        self.assertIn("<Control-q>", build_source)
+
+    def test_destructive_confirmation_defaults_to_no(self) -> None:
+        confirm_source = inspect.getsource(TailsClonerApp._confirm_and_clone)
+
+        self.assertIn("default=messagebox.NO", confirm_source)
+
+    def test_write_form_precedes_experimental_options_in_write_tab(self) -> None:
+        build_source = inspect.getsource(TailsClonerApp._build_ui)
+
+        # Grid rows decide visual order (the experimental panel is *built* first).
+        self.assertIn('right.grid(row=0, column=0, sticky="nsew")', build_source)
+        self.assertIn('exp_panel.grid(row=1, column=0, sticky="ew", pady=(8, 0))', build_source)
+
+    def test_write_is_refused_while_a_verified_download_is_running(self) -> None:
+        app = TailsClonerApp.__new__(TailsClonerApp)
+        app._download_in_progress = True
+        with mock.patch("tails_cloner.app.messagebox") as box:
+            app._confirm_and_clone()
+
+        box.showinfo.assert_called_once()
+        box.askyesno.assert_not_called()
+
+    def test_suggested_checksum_uses_shared_tor_aware_fetch_and_matches_filename(self) -> None:
+        app = TailsClonerApp.__new__(TailsClonerApp)
+        app._ui_events = SimpleQueue()
+        digest = "ab" * 32
+        text = f"{'cd' * 32}  other.img\n{digest}  tails-amd64-7.0.img\n"
+
+        applied: list[tuple[str, str]] = []
+        app._apply_suggested_checksum = lambda url, checksum: applied.append((url, checksum))  # type: ignore[method-assign]
+        with (
+            mock.patch("tails_cloner.app.should_use_torify", return_value=True),
+            mock.patch("tails_cloner.app.fetch_checksum_text", return_value=text) as fetch,
+        ):
+            app._fetch_suggested_checksum(
+                "https://example.invalid/tails-amd64-7.0.img.sha256",
+                "https://example.invalid/tails-amd64-7.0.img",
+            )
+
+        fetch.assert_called_once_with("https://example.invalid/tails-amd64-7.0.img.sha256", use_torify=True)
+        app._ui_events.get_nowait()()
+        self.assertEqual(applied, [("https://example.invalid/tails-amd64-7.0.img.sha256", digest)])
+
+    def test_stale_suggested_checksum_for_a_previous_version_is_ignored(self) -> None:
+        app = TailsClonerApp.__new__(TailsClonerApp)
+        app.suggested_checksum_var = _FakeStringVar("current")
+        app.controller = type(
+            "Controller", (), {"state": type("State", (), {"selected_checksum_url": "https://example.invalid/new"})()}
+        )()
+
+        app._apply_suggested_checksum("https://example.invalid/old", "stale")
+        self.assertEqual(app.suggested_checksum_var.get(), "current")
+
+        app._apply_suggested_checksum("https://example.invalid/new", "fresh")
+        self.assertEqual(app.suggested_checksum_var.get(), "fresh")
+
+    def test_dd_progress_switches_progress_bar_to_determinate_with_percentage(self) -> None:
+        app = TailsClonerApp.__new__(TailsClonerApp)
+        app._write_total_bytes = 1000
+        app._write_in_progress = True
+        calls: list[tuple[str, dict[str, object]]] = []
+
+        class _Bar:
+            mode = "indeterminate"
+
+            def cget(self, name: str) -> str:
+                assert name == "mode"
+                return self.mode
+
+            def stop(self) -> None:
+                calls.append(("stop", {}))
+
+            def configure(self, **kwargs: object) -> None:
+                self.mode = str(kwargs.get("mode", self.mode))
+                calls.append(("configure", kwargs))
+
+        app.progress_bar = _Bar()  # type: ignore[assignment]
+        app.progress_label = _FakeLabel()  # type: ignore[assignment]
+
+        app._set_progress_fraction(250, "250 bytes (250 B) copied, 1 s, 250 B/s")
+
+        self.assertIn(("configure", {"mode": "determinate", "maximum": 1000}), calls)
+        self.assertIn(("configure", {"value": 250}), calls)
+        self.assertTrue(app.progress_label.kwargs["text"].startswith("25% · "))
+
+    def test_progress_fraction_is_ignored_when_total_is_unknown(self) -> None:
+        app = TailsClonerApp.__new__(TailsClonerApp)
+        app._write_total_bytes = 0
+        app._write_in_progress = True
+        app.progress_bar = None  # type: ignore[assignment]  # would raise if touched
+
+        app._set_progress_fraction(250, "250 bytes copied")
+
+    def test_gui_progress_events_carry_bytes_written_like_the_cli(self) -> None:
+        app = TailsClonerApp.__new__(TailsClonerApp)
+        app._ui_events = SimpleQueue()
+        event_output = StringIO()
+        app._operator_events = EventSink(
+            command="gui", output_mode=OutputMode.JSONL, stdout=event_output, stderr=StringIO()
+        )
+
+        class Controller:
+            state = type("State", (), {"status_message": ""})()
+
+            @staticmethod
+            def clone_selected_image(
+                _image_path: str | None,
+                _device_path: str,
+                progress_callback: Callable[[str], None] | None = None,
+            ) -> None:
+                assert progress_callback is not None
+                progress_callback("1048576 bytes (1.0 MB, 1.0 MiB) copied, 1 s, 1.0 MB/s")
+
+        app.controller = cast(object, Controller())
+        app._run_write_operation("/tmp/tails.img", "/dev/sdz", False)
+
+        progress = next(event for event in _jsonl_events(event_output) if event["kind"] == "progress")
+        self.assertEqual(progress["bytes_written"], 1048576)
+
+
 if __name__ == "__main__":
     unittest.main()
