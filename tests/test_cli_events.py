@@ -17,8 +17,10 @@ from tails_cloner.cli_events import (
 def test_json_mode_emits_one_deterministic_completion_envelope() -> None:
     stdout = StringIO()
     stderr = StringIO()
-    sink = EventSink(command="status", output_mode=OutputMode.JSON, stdout=stdout, stderr=stderr)
-    sink.start(application_version="0.5.4")
+    sink = EventSink(
+        command="status", output_mode=OutputMode.JSON, stdout=stdout, stderr=stderr
+    )
+    sink.start(application_version="0.5.5")
     sink.discovery(resource="devices", count=2)
     sink.complete(CommandResult(payload={"ok": True}))
     payload = json.loads(stdout.getvalue())
@@ -36,13 +38,23 @@ def test_json_mode_emits_one_deterministic_completion_envelope() -> None:
 
 def test_jsonl_mode_streams_stable_event_kinds_and_bounded_messages() -> None:
     stdout = StringIO()
-    sink = EventSink(command="install", output_mode=OutputMode.JSONL, stdout=stdout, stderr=StringIO())
+    sink = EventSink(
+        command="install",
+        output_mode=OutputMode.JSONL,
+        stdout=stdout,
+        stderr=StringIO(),
+    )
     sink.start()
     sink.warning("x" * 2_000)
     sink.write_boundary("ready", target="/dev/sdz")
     sink.complete(CommandResult(payload={"done": True}))
     events = [json.loads(line) for line in stdout.getvalue().splitlines()]
-    assert [event["kind"] for event in events] == ["start", "warning", "write_boundary", "completion"]
+    assert [event["kind"] for event in events] == [
+        "start",
+        "warning",
+        "write_boundary",
+        "completion",
+    ]
     assert [event["sequence"] for event in events] == [1, 2, 3, 4]
     assert all(event["schema"] == SCHEMA for event in events)
     assert len(events[1]["message"]) <= 512
@@ -61,13 +73,19 @@ def test_log_file_keeps_same_jsonl_schema_in_human_mode(tmp_path: Path) -> None:
     sink.verification("verified", sha256="a" * 64)
     sink.complete(CommandResult(payload={"path": "/tmp/tails.img"}))
     events = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
-    assert [event["kind"] for event in events] == ["start", "verification", "completion"]
+    assert [event["kind"] for event in events] == [
+        "start",
+        "verification",
+        "completion",
+    ]
     assert all(event["schema"] == SCHEMA for event in events)
 
 
 def test_failure_envelope_has_stable_exit_taxonomy() -> None:
     stdout = StringIO()
-    sink = EventSink(command="install", output_mode=OutputMode.JSON, stdout=stdout, stderr=StringIO())
+    sink = EventSink(
+        command="install", output_mode=OutputMode.JSON, stdout=stdout, stderr=StringIO()
+    )
     sink.start()
     sink.fail(
         CliError(

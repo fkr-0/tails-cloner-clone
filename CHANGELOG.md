@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.5.5 - 2026-10-12
+
 ### Review Fixes: Safety and Reliability
 
 - Never delete files on a still-mounted boot partition: the optional boot-loader reordering now uses a plain scratch mount point instead of a recursively cleaned temporary directory, keeps the directory when `umount` fails, reports it, and no longer lets an unmount failure mask the original error.
