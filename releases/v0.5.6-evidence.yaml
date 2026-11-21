@@ -4,11 +4,11 @@ release:
   unit: tails-cloner repository
   candidate_version: 0.5.6
   base_revision: ba9659f5bfa87d160721a558dbdc5b15485efe85
-  target_revision: aa5741fbfd458161eb854db4c0b3d6bf8a6bcb35
+  target_revision: 0c6a1363d362d247c6f87bafc18763a716a114c0
   members:
     - tails-cloner-clone
   revision_vector:
-    tails-cloner: aa5741fbfd458161eb854db4c0b3d6bf8a6bcb35
+    tails-cloner: 0c6a1363d362d247c6f87bafc18763a716a114c0
 metadata:
   version_sources:
     - pyproject.toml
@@ -62,12 +62,12 @@ checks:
     command: uv run --locked --extra dev python -m pytest -q -o addopts='' tests
     exit_code: 0
     result: 322 passed, 1 skipped, 2 subtests passed
-    scope: integrated TOR transport plus separate uncommitted CLI-review tests in worktree
+    scope: integrated TOR transport and independent CLI review on clean worktree
   - name: committed source archive tests
-    command: PYTHONPATH=/tmp/tails-cloner-v056-integrated.hgPiKx/src uv run --locked --extra dev python -m pytest -q -o addopts='' /tmp/tails-cloner-v056-integrated.hgPiKx/tests
+    command: PYTHONPATH=/tmp/tails-cloner-v056-final.61xAY2/src uv run --locked --extra dev python -m pytest -q -o addopts='' /tmp/tails-cloner-v056-final.61xAY2/tests
     exit_code: 0
-    result: 314 passed, 4 skipped, 2 subtests passed
-    scope: exact committed source including TOR at target_revision; skips optional nested Tails checkout/workspace
+    result: 319 passed, 4 skipped, 2 subtests passed
+    scope: exact committed source including TOR and CLI-review tests at target_revision; skips optional nested Tails checkout/workspace
   - name: offline boot-order evidence tests
     command: uv run --locked --extra dev python -m pytest -q -o addopts='' infra/vagrant-lab/tests/e2e/test_boot_order_evidence.py
     exit_code: 0
@@ -89,35 +89,39 @@ checks:
     exit_code: 0
     result: tails-cloner-clone 0.5.6
   - name: build sdist and wheel from committed source archive
-    command: uv build --offline /tmp/tails-cloner-v056-integrated.hgPiKx --out-dir /tmp/tails-cloner-v056-integrated.hgPiKx/dist
+    command: uv build --offline /tmp/tails-cloner-v056-final.61xAY2 --out-dir /tmp/tails-cloner-v056-final.61xAY2/dist
     exit_code: 0
     result: sdist and wheel built; no AppImage or external release
   - name: built wheel CLI smoke
-    command: uv run --offline --no-project --with /tmp/tails-cloner-v056-integrated.hgPiKx/dist/tails_cloner_clone-0.5.6-py3-none-any.whl tails-cloner-clone --version
+    command: uv run --offline --no-project --with /tmp/tails-cloner-v056-final.61xAY2/dist/tails_cloner_clone-0.5.6-py3-none-any.whl tails-cloner-clone --version
     exit_code: 0
     result: tails-cloner-clone 0.5.6; --help also passed
   - name: push integrated TOR revision to origin main
     command: git push origin main
     exit_code: 0
     result: a8854ff..aa5741f main -> main
+  - name: push independent CLI review to origin main
+    command: git push origin main
+    exit_code: 0
+    result: 96ab730..0c6a136 main -> main
   - name: Git diff whitespace check
     command: git diff --check
     exit_code: 0
     result: passed
 artifacts:
-  - path: /tmp/tails-cloner-v056-integrated.hgPiKx/dist/tails_cloner_clone-0.5.6.tar.gz
+  - path: /tmp/tails-cloner-v056-final.61xAY2/dist/tails_cloner_clone-0.5.6.tar.gz
     kind: sdist
-    size_bytes: 132558
-    sha256: 0eb396d252d4d36df5ec1d47c64e250c5300d278c01911787665c7ae9c568ca1
-  - path: /tmp/tails-cloner-v056-integrated.hgPiKx/dist/tails_cloner_clone-0.5.6-py3-none-any.whl
+    size_bytes: 133479
+    sha256: eee87601dfbc5930c4c2e846246d04472bed23334e7afb139ee10cdb1fdb70ec
+  - path: /tmp/tails-cloner-v056-final.61xAY2/dist/tails_cloner_clone-0.5.6-py3-none-any.whl
     kind: wheel
-    size_bytes: 92457
-    sha256: c3b9ee3938534d0ca8e84095e6aeac9c3fd03d9bf5f3fd1209346fc4a9771a8d
+    size_bytes: 92869
+    sha256: e7ed83e2bd60b33578d7d516c397fea4be5b273a2cbb1542a83dd2acefed5f39
 warnings:
   - Independent review of boot-loader file apply and post-write target-identity binding remains pending; do not mark hardware-safe.
   - No full AppImage build/smoke, Tails VM/QEMU boot, visible menu verification or real-device mutation was performed. Existing AppImage script deletes existing dist/build artifacts and downloads a tool, so was not run.
   - TOR remote hardening is integrated at aa5741f, but independent Tor/DNS-leak review, real-Tails route capture and manual mirror testing remain open. No anonymity guarantee is asserted.
-  - Two concurrent CLI-review paths (docs/cli-command-spec.md and tests/test_cli.py) are outside target_revision and remain uncommitted under separate ownership.
+  - Independent CLI reviewer completed and the scoped docs/test changes were integrated in 0c6a136. This is CLI contract test coverage, not a real-device qualification.
   - uv lock --offline attempted and failed because mypy resolver metadata was not cached. The local editable package version was updated narrowly in uv.lock; uv run --locked succeeded afterwards.
   - Setuptools reported deprecated project.license table and classifiers, not a current build failure.
 side_effects:
