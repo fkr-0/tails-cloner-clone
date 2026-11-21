@@ -268,6 +268,47 @@ def _validate_partition_pair(source: PartitionInfo, target: PartitionInfo) -> No
         )
 
 
+def _block_ancestry(path: str, inspect: RunCommand) -> set[str]:
+    """Resolve *all* block ancestors by major:minor, including dm/loop stacks.
+
+    A missing or ambiguous topology is unsafe, not evidence of independence.
+    """
+    result = inspect(["lsblk", "--json", "--inverse", "--output", "PATH,MAJ:MIN,TYPE", path])
+    if result.returncode != 0:
+        raise RuntimeError(f"Cannot verify block ancestry of {path}")
+    try:
+        roots = json.loads(result.stdout)["blockdevices"]
+        nodes = list(walk_nodes(roots))
+        identities = {str(node.get("maj:min") or "") for node in nodes}
+    except (KeyError, ValueError, TypeError) as error:
+        raise RuntimeError(f"Cannot verify block ancestry of {path}") from error
+    if not roots or not nodes or any(not identity or ":" not in identity for identity in identities):
+        raise RuntimeError(f"Incomplete block ancestry of {path}")
+    return identities
+
+
+def _assert_independent_media(
+    source_partition: str,
+    target_partition: str,
+    inspect: RunCommand,
+    *,
+    source_image: Path | None = None,
+) -> None:
+    """Fail closed before dd when a source, backing file, or target shares media."""
+    target_ancestors = _block_ancestry(target_partition, inspect)
+    if target_ancestors & _block_ancestry(source_partition, inspect):
+        raise RuntimeError("Source and target share underlying block media")
+    if source_image is not None:
+        result = inspect(["findmnt", "-n", "-o", "SOURCE", "-T", str(source_image)])
+        if result.returncode != 0:
+            raise RuntimeError("Cannot verify image backing filesystem")
+        backing = result.stdout.strip().split("[", 1)[0]
+        if not backing.startswith("/dev/"):
+            raise RuntimeError("Cannot verify image backing block device")
+        if target_ancestors & _block_ancestry(backing, inspect):
+            raise RuntimeError("Source image resides on target media")
+
+
 def _unmount_target_partition(
     target: PartitionInfo,
     mutate: RunCommand,
@@ -309,16 +350,24 @@ def _upgrade_from_source_partition(
     runner: RunCommand = run_command,
     privileged_runner: RunCommand | None = None,
     progress_callback: ProgressCallback | None = None,
+    identity_runner: RunCommand | None = None,
+    source_image: Path | None = None,
 ) -> None:
     mutate = _resolve_privileged_runner(runner, privileged_runner)
     had_persistence = has_persistence_partition(target_device, runner)
     target_partition = find_tails_system_partition(target_device, runner)
     _validate_partition_pair(source_partition, target_partition)
 
+    if identity_runner is None and runner is not run_command:
+        raise RuntimeError("Cannot verify source-target identity with injected writer")
+    inspect = identity_runner if identity_runner is not None else run_command
+    _assert_independent_media(source_partition.path, target_partition.path, inspect, source_image=source_image)
+
     _emit(progress_callback, f"Using target Tails system partition {target_partition.path}")
     _unmount_target_partition(target_partition, mutate, progress_callback)
 
     command = build_partition_upgrade_command(source_partition.path, target_partition.path)
+    _assert_independent_media(source_partition.path, target_partition.path, inspect, source_image=source_image)
     _emit(progress_callback, "Running partition-scoped Tails upgrade")
     _copy_partition(command, runner, privileged_runner, progress_callback)
     runner(["sync"])
@@ -343,6 +392,7 @@ def upgrade_tails_system_partition_from_device(
     runner: RunCommand = run_command,
     privileged_runner: RunCommand | None = None,
     progress_callback: ProgressCallback | None = None,
+    identity_runner: RunCommand | None = None,
 ) -> None:
     """Upgrade a Tails target from another attached Tails live device."""
     if os.path.realpath(source_device) == os.path.realpath(target_device):
@@ -356,6 +406,7 @@ def upgrade_tails_system_partition_from_device(
         runner=runner,
         privileged_runner=privileged_runner,
         progress_callback=progress_callback,
+        identity_runner=identity_runner,
     )
 
 
@@ -366,6 +417,7 @@ def upgrade_tails_system_partition(
     runner: RunCommand = run_command,
     privileged_runner: RunCommand | None = None,
     progress_callback: ProgressCallback | None = None,
+    identity_runner: RunCommand | None = None,
 ) -> None:
     """Upgrade an existing Tails target without rewriting its partition table."""
     image = LocalImageSource(Path(image_path))
@@ -381,6 +433,8 @@ def upgrade_tails_system_partition(
             runner=runner,
             privileged_runner=privileged_runner,
             progress_callback=progress_callback,
+            identity_runner=identity_runner,
+            source_image=image.path,
         )
     finally:
         try:

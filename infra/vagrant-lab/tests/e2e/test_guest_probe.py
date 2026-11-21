@@ -51,6 +51,14 @@ def test_guest_probe_emits_contract_shaped_json(tmp_path: Path) -> None:
     assert data['block_devices']['source_parent_disk'] == '/dev/sdb'
     assert data['project_access']['checkout_visible'] is True
     assert data['project_access']['python_import_tails_cloner'] is True
+    evidence = data['running_system_evidence']
+    assert isinstance(evidence['proc_cmdline'], str)
+    assert isinstance(evidence['etc_os_release'], str)
+    assert isinstance(evidence['proc_mounts'], str)
+    assert isinstance(evidence['findmnt_root_source'], str)
+    assert isinstance(evidence['findmnt_live_medium_source'], str)
+    assert evidence['findmnt_json'] is None or isinstance(evidence['findmnt_json'], dict)
+    assert evidence['lsblk_json'] is None or isinstance(evidence['lsblk_json'], dict)
 
 
 def test_guest_probe_can_emit_serial_marker_prefix(tmp_path: Path) -> None:

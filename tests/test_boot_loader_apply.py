@@ -65,10 +65,10 @@ def test_atomic_replace_failure_preserves_original(tmp_path: Path, monkeypatch: 
     config.write_bytes(GRUB)
     original_replace = os.replace
 
-    def fail_replace(source: str | os.PathLike[str], dest: str | os.PathLike[str]) -> None:
-        if Path(dest) == config:
+    def fail_replace(source: str | os.PathLike[str], dest: str | os.PathLike[str], **kwargs: int) -> None:
+        if Path(dest).name == config.name:
             raise OSError("simulated replace failure")
-        original_replace(source, dest)
+        original_replace(source, dest, **kwargs)
 
     monkeypatch.setattr(os, "replace", fail_replace)
     with pytest.raises(OSError, match="simulated replace failure"):

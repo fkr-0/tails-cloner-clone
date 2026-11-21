@@ -922,12 +922,19 @@ def _execute_operation(
                 category="safety_refusal",
             ) from error
         except PostWriteFailure as error:
-            sink.post_write_step("failed", str(error))
+            outcome = {"write_succeeded": error.write_succeeded,
+                       "customization_succeeded": error.customization_succeeded,
+                       "device_state": error.device_state,
+                       "mount_point": error.mount_point,
+                       "unmount_succeeded": error.unmount_succeeded}
+            sink.post_write_step("failed", str(error), **outcome)
             raise CliError(
-                f"Image write completed but post-write customization failed: {error}",
+                f"Image write completed but post-write steps failed: {error}",
                 exit_code=ExitCode.POST_WRITE_FAILED,
                 category="post_write_failed_after_write",
-                details={"image_written": True, "post_write_customizations": "failed"},
+                details={"image_written": error.write_succeeded,
+                         "post_write_customizations": "failed" if post_write.enabled else "not_requested",
+                         "post_write_steps": "failed", **outcome},
             ) from error
         except RuntimeError as error:
             if "previously verified downloaded image" in str(error).casefold() or "integrity verification failed" in str(error).casefold():

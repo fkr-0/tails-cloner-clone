@@ -38,6 +38,7 @@ from tails_cloner.image_probe import discover_boot_loader_entries
 from tails_cloner.models import SourceMode
 from tails_cloner.network import should_use_torify
 from tails_cloner.planner import OperationKind, OperationPlan
+from tails_cloner.post_write import PostWriteFailure
 from tails_cloner.theme import (
     configure_canvas_widget,
     configure_combobox_popdown,
@@ -108,6 +109,7 @@ class TailsClonerApp(tk.Tk):
         self._last_versions_refresh_at: str = "never"
         self._checksum_job_id = 0
         self._boot_parse_job_id = 0
+        self._boot_parse_source_identity: tuple[SourceMode, str] | None = None
         self._ui_events: SimpleQueue[Callable[[], None]] = SimpleQueue()
         self._write_in_progress = False
         self._write_total_bytes = 0
@@ -969,6 +971,7 @@ class TailsClonerApp(tk.Tk):
 
     def _reset_boot_order_entries(self) -> None:
         self._boot_parse_job_id = self.__dict__.get("_boot_parse_job_id", 0) + 1
+        self._boot_parse_source_identity = None
         self.boot_order_list.delete(0, tk.END)
         self.boot_loader_entry_var.set("")
         self.boot_loader_status_var.set("No entries loaded. Parse the selected image to begin.")
@@ -1021,14 +1024,14 @@ class TailsClonerApp(tk.Tk):
     def _start_parse_boot_order_entries(self) -> None:
         if not self.experimental_enabled_var.get() or self._upgrade_mode_enabled():
             return
-        source_path = self.image_path_var.get().strip()
-        if self.controller.state.source_mode == SourceMode.RUNNING:
-            source_path = self.controller.state.running_tails_device
+        identity = self._boot_parse_current_source_identity()
+        source_path = identity[1] if identity is not None else ""
         if not source_path:
             self.boot_loader_status_var.set("No image/source selected to parse.")
             return
         self._boot_parse_job_id += 1
         job_id = self._boot_parse_job_id
+        self._boot_parse_source_identity = identity
         self.boot_loader_status_var.set("Reading boot-loader entries…")
         self.controller.executor.submit(self._parse_boot_order_entries_task, job_id, source_path)
 
@@ -1040,10 +1043,21 @@ class TailsClonerApp(tk.Tk):
             return
         self._queue_ui(partial(self._apply_parsed_boot_order_entries, job_id, source_path, entries))
 
+    def _boot_parse_current_source_identity(self) -> tuple[SourceMode, str] | None:
+        mode = self.controller.state.source_mode
+        if mode == SourceMode.RUNNING:
+            return mode, self.controller.state.running_tails_device.strip()
+        if mode in {SourceMode.LOCAL, SourceMode.REMOTE}:
+            return mode, self.image_path_var.get().strip()
+        # Attached sources are not image paths: never reuse an image parse for them.
+        return None
+
     def _boot_parse_is_current(self, job_id: int, source_path: str) -> bool:
-        current_path = (self.controller.state.running_tails_device if self.controller.state.source_mode == SourceMode.RUNNING
-                        else self.image_path_var.get().strip())
-        return (job_id == self._boot_parse_job_id and source_path == current_path
+        identity = self._boot_parse_current_source_identity()
+        expected = self.__dict__.get("_boot_parse_source_identity")
+        return (job_id == self._boot_parse_job_id
+                and identity is not None and identity == expected
+                and identity[1] == source_path
                 and self.experimental_enabled_var.get() and not self._upgrade_mode_enabled())
 
     def _apply_boot_parse_failure(self, job_id: int, source_path: str, reason: str) -> None:
@@ -1488,6 +1502,20 @@ class TailsClonerApp(tk.Tk):
                 }
             )
             self._queue_ui(lambda: self._finish_write_success(complete_title, complete_message))
+        except PostWriteFailure as error:
+            error_message = str(error)
+            self.controller.state.status_message = f"Image written; post-write steps incomplete: {error_message}"
+            self._emit_failure(
+                error_message,
+                exit_code=ExitCode.POST_WRITE_FAILED,
+                category="post_write_failed_after_write",
+                details={"activity": "write", "operation": "upgrade" if is_upgrade else "install", "target": device_path,
+                         "write_succeeded": error.write_succeeded,
+                         "customization_succeeded": error.customization_succeeded,
+                         "device_state": error.device_state, "mount_point": error.mount_point,
+                         "unmount_succeeded": error.unmount_succeeded},
+            )
+            self._queue_ui(partial(self._finish_write_partial_success, error_message))
         except Exception as error:  # noqa: BLE001 - converted into visible UI feedback
             error_message = str(error)
             self.controller.state.status_message = f"{operation_label.title()} failed: {error_message}"
@@ -1557,6 +1585,21 @@ class TailsClonerApp(tk.Tk):
         self._sync_experimental_state()
         self._update_device_warnings_and_button()
         messagebox.showerror(f"{operation_label.title()} failed", message)
+
+    def _finish_write_partial_success(self, message: str) -> None:
+        self._write_in_progress = False
+        self._set_write_controls_locked(False)
+        summary = "Image write completed; optional customization failed."
+        self._finish_clone_progress(f"{summary} {message}")
+        self._sync_source_mode()
+        self._sync_experimental_state()
+        self._update_device_warnings_and_button()
+        messagebox.showwarning(
+            "Image written — customization failed",
+            f"{summary}\n\nThe original image write was successful; "
+            f"the requested post-write changes were not completed.\n\n{message}\n\n"
+            "Check the target device state before removing it or retrying customization.",
+        )
 
     def _finish_clone_progress(self, message: str) -> None:
         self.progress_bar.stop()

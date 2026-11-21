@@ -135,7 +135,10 @@ TAILS_CLONER_LAB_ALLOW_DESTRUCTIVE=1 python3 infra/vagrant-lab/real-boot-lane/bo
 
 The tool applies the production rewrite to a temporary copy, verifies that
 the original and unrelated bytes remain unchanged, and records before/after
-hashes and parsed entries. It does not modify the input directory.
+hashes and parsed entries. It fails closed if a requested entry is absent or
+any discovered config was skipped or cannot reflect the requested order. It
+does not modify the input directory. The test fixture is a directory tree,
+not a FAT image, so `fat_image` remains `not_verified`.
 
 ### Human-run QEMU layer (not yet qualified)
 
@@ -152,6 +155,21 @@ hashes and parsed entries. It does not modify the input directory.
 5. Review the actual visible titles and their positions. Whole-frame hashes
    alone cannot prove menu ordering: timing, cursor, and boot-stage differences
    can change pixels without changing the menu order.
+
+The expected reviewed evidence path is
+`infra/vagrant-lab/real-boot-lane/out/boot-order/qemu/boot-screen-probe-evidence.json`.
+Keep separate baseline and rewritten-image screenshot sets, and record the
+human-observed title order with screenshot paths and image SHA256 hashes. The
+existing QMP probe only proves capture; without a verified visual comparison,
+set `visible_menu_order` to `not_verified`.
+
+At the 2026-11-21 check the prepared serial image was **absent** from
+`out/debug-boot/` and the host filesystem reported only 16 GB free (99% used).
+No live QEMU boot or FAT injection was attempted. First restore the documented
+prepared image from an already trusted local cache (no multi-GB download in
+this lane), then do a dry-run of the screenshot probe and review disk/process
+preflight again. Never substitute the historical screenshots in `out/` as
+evidence of the newly rewritten image.
 
 Neither dry-run success, offline copy success nor QMP capture alone proves
 real-device boot compatibility. Record these layers as `not_verified`

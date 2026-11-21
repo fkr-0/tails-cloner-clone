@@ -494,6 +494,11 @@ def test_post_write_failure_has_distinct_exit_after_image_write(tmp_path: Path) 
     assert code == 10
     assert envelope["error"]["category"] == "post_write_failed_after_write"
     assert envelope["error"]["details"]["image_written"] is True
+    assert envelope["error"]["details"]["write_succeeded"] is True
+    assert envelope["error"]["details"]["customization_succeeded"] is False
+    assert envelope["error"]["details"]["device_state"] == "unmounted"
+    assert envelope["error"]["details"]["mount_point"] == "none"
+    assert envelope["error"]["details"]["unmount_succeeded"] is None
 
 
 def test_post_write_progress_is_translated_into_structured_file_events() -> None:
@@ -677,6 +682,7 @@ def test_running_tails_upgrade_resolves_stable_source_and_target_aliases() -> No
     with (
         mock.patch("tails_cloner.cli._build_controller", return_value=controller),
         mock.patch("tails_cloner.controller.is_running_tails", return_value=True),
+        mock.patch("tails_cloner.controller.has_running_tails_boot_signals", return_value=True),
         mock.patch("tails_cloner.controller.get_running_tails_version", return_value="7.7.2"),
         mock.patch("tails_cloner.controller.get_running_tails_device", return_value="/dev/sdy1"),
     ):

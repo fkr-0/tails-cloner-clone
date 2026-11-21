@@ -4,6 +4,22 @@ status_legend:
   partial: modeled by dry-run or synthetic fixture, but not full real boot/device flow
   planned: documented target with no executable assertion yet
   blocked: needs real Tails boot/source support or GUI automation
+boot_order_evidence:
+  current_status: partial
+  scope: boot-config menu ordering; separate from the seven install/upgrade cases
+  offline_fixture:
+    status: partial
+    evidence: infra/vagrant-lab/tests/e2e/test_boot_order_evidence.py
+    runner: infra/vagrant-lab/real-boot-lane/boot_order_evidence.py
+    result: synthetic directory-copy rewrite is covered by focused tests; no real FAT image or mounted device was validated
+  fat_image: not_verified
+  qemu_boot: not_verified
+  visible_menu_order: not_verified
+  real_device_boot: not_verified
+  operator_steps: infra/vagrant-lab/real-boot-lane/OPERATOR.md
+  expected_qemu_evidence: infra/vagrant-lab/real-boot-lane/out/boot-order/qemu/boot-screen-probe-evidence.json
+  next_step: restore the trusted prepared image when available, perform disk/process preflight and probe dry-run, then compare baseline and modified QEMU screenshots with human-confirmed menu-title positions
+  unresolved_real_boot_todos: [E2E-001, E2E-004, E2E-005]
 cases:
   install.running_live_iso_usb:
     group: install

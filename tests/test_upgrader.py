@@ -103,6 +103,23 @@ class MutationRunner(FakeRunner):
     pass
 
 
+def independent_identity_probe(command: list[str]) -> subprocess.CompletedProcess[str]:
+    """Inject independent synthetic block ancestry and image backing evidence."""
+    if command[0] == "findmnt":
+        return subprocess.CompletedProcess(command, 0, stdout="/dev/host1\n", stderr="")
+    device = command[-1]
+    disk = "8:16" if device.startswith("/dev/sdb") else (
+        "8:32" if device.startswith("/dev/sdc") else (
+            "8:48" if device.startswith("/dev/sdd") else "7:0" if device.startswith("/dev/loop") else "8:0"
+        )
+    )
+    leaf = "7:1" if device.startswith("/dev/loop") else (
+        "8:18" if device.startswith("/dev/sdb") else "8:33" if device.startswith("/dev/sdc") else "8:49"
+    )
+    payload = {"blockdevices": [{"maj:min": leaf, "children": [{"maj:min": disk}]}]}
+    return subprocess.CompletedProcess(command, 0, stdout=json.dumps(payload), stderr="")
+
+
 class SettleFailRunner(FakeRunner):
     def __call__(self, command: list[str]) -> subprocess.CompletedProcess[str]:
         if command == ["udevadm", "settle"]:
@@ -247,6 +264,7 @@ def test_image_upgrade_uses_read_only_loop_and_privileged_mutation_boundary(tmp_
         runner=reader,
         privileged_runner=mutator,
         progress_callback=progress.append,
+        identity_runner=independent_identity_probe,
     )
 
     assert ["losetup", "--read-only", "--find", "--partscan", "--show", str(image)] in mutator.commands
@@ -266,7 +284,7 @@ def test_image_upgrade_does_not_fail_after_successful_write_when_udev_settle_ret
     reader = SettleFailRunner()
     mutator = MutationRunner()
 
-    upgrade_tails_system_partition(image, "/dev/sdb", runner=reader, privileged_runner=mutator)
+    upgrade_tails_system_partition(image, "/dev/sdb", runner=reader, privileged_runner=mutator, identity_runner=independent_identity_probe)
 
     assert ["dd", "if=/dev/loop7p1", "of=/dev/sdb2", "bs=4M", "status=progress", "conv=fsync"] in mutator.commands
     assert reader.commands.count(["udevadm", "settle"]) == 2
@@ -281,6 +299,7 @@ def test_upgrade_from_device_is_partition_scoped_without_loop_setup() -> None:
         "/dev/sdb",
         runner=runner,
         progress_callback=progress.append,
+        identity_runner=independent_identity_probe,
     )
 
     assert ["dd", "if=/dev/sdc1", "of=/dev/sdb2", "bs=4M", "status=progress", "conv=fsync"] in runner.commands
@@ -297,6 +316,7 @@ def test_upgrade_allows_target_without_persistence() -> None:
         "/dev/sdd",
         runner=runner,
         progress_callback=progress.append,
+        identity_runner=independent_identity_probe,
     )
 
     assert ["dd", "if=/dev/sdc1", "of=/dev/sdd1", "bs=4M", "status=progress", "conv=fsync"] in runner.commands

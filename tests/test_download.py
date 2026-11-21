@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import time
 from email.message import Message
 from pathlib import Path
 from unittest import mock
@@ -9,6 +10,7 @@ from urllib.request import Request
 import pytest
 
 from tails_cloner.download import (
+    DownloadCancelledError,
     DownloadNetworkError,
     DownloadVerificationError,
     HttpsOnlyRedirectHandler,
@@ -65,7 +67,7 @@ def test_existing_file_is_reused_only_after_fresh_sha_and_openpgp_verification(t
     digest = hashlib.sha256(destination.read_bytes()).hexdigest()
     downloader = VerifiedImageDownloader(use_torify=lambda: False)
 
-    def write_signature(_url: str, path: Path) -> None:
+    def write_signature(_url: str, path: Path, _deadline: float | None = None) -> None:
         path.write_bytes(b"signature")
 
     with (
@@ -98,7 +100,7 @@ def test_failed_verification_never_overwrites_existing_destination(tmp_path: Pat
     destination.write_bytes(b"keep me")
     downloader = VerifiedImageDownloader(use_torify=lambda: False)
 
-    def write_signature(_url: str, path: Path) -> None:
+    def write_signature(_url: str, path: Path, _deadline: float | None = None) -> None:
         path.write_bytes(b"signature")
 
     with (
@@ -129,10 +131,10 @@ def test_new_download_is_verified_before_atomic_promotion(tmp_path: Path) -> Non
     digest = hashlib.sha256(image).hexdigest()
     downloader = VerifiedImageDownloader(use_torify=lambda: False)
 
-    def write_signature(_url: str, path: Path) -> None:
+    def write_signature(_url: str, path: Path, _deadline: float | None = None) -> None:
         path.write_bytes(b"signature")
 
-    def write_image(_url: str, path: Path, _callback: object) -> None:
+    def write_image(_url: str, path: Path, _callback: object, _deadline: float | None = None) -> None:
         path.write_bytes(image)
 
     def verify_candidate(path: Path, **_kwargs: object) -> tuple[str, str]:
@@ -162,17 +164,60 @@ def test_torified_image_download_pins_https_for_initial_and_redirect_protocols(t
     downloader = VerifiedImageDownloader(use_torify=lambda: True)
     target = tmp_path / "tails.img.part"
     target.write_bytes(b"")
-    with mock.patch("tails_cloner.download.subprocess.run") as run:
+    with (
+        mock.patch("tails_cloner.download.tor_socks_port", return_value=9150),
+        mock.patch("tails_cloner.download.torify_available", return_value=True),
+        mock.patch.dict("os.environ", {"ALL_PROXY": "socks5://untrusted.invalid:1080"}),
+        mock.patch("tails_cloner.download.subprocess.Popen") as popen,
+    ):
+        popen.return_value.poll.return_value = 0
+        popen.return_value.returncode = 0
         downloader._download_image(
             "https://example.invalid/tails.img",
             target,
             None,
         )
+    command = popen.call_args.args[0]
+    assert command[:3] == ["curl", "--disable", "-fL"]
+    assert "torify" not in command
+    assert command[command.index("--proxy") + 1] == "socks5h://127.0.0.1:9150"
+    assert command[command.index("--proto") + 1] == "=https"
+    assert command[command.index("--proto-redir") + 1] == "=https"
+    assert command[command.index("--noproxy") + 1] == ""
+    assert "ALL_PROXY" not in popen.call_args.kwargs["env"]
+
+
+def test_torified_signature_download_uses_validated_socks5h_and_clean_env(tmp_path: Path) -> None:
+    downloader = VerifiedImageDownloader(use_torify=lambda: True)
+    target = tmp_path / "tails.img.sig"
+    with (
+        mock.patch("tails_cloner.download.tor_socks_port", return_value=9050),
+        mock.patch("tails_cloner.download.torify_available", return_value=True),
+        mock.patch.dict("os.environ", {"HTTPS_PROXY": "http://untrusted.invalid:3128"}),
+        mock.patch("tails_cloner.download.subprocess.run") as run,
+    ):
+        target.write_bytes(b"sig")
+        downloader._download_signature("https://example.invalid/tails.img.sig", target)
     command = run.call_args.args[0]
-    assert command[:3] == ["torify", "curl", "-fL"]
-    assert "--proto" in command
-    assert "=https" in command
-    assert "--proto-redir" in command
+    assert command[:3] == ["curl", "--disable", "-fL"]
+    assert command[command.index("--proxy") + 1] == "socks5h://127.0.0.1:9050"
+    assert command[command.index("--proto-redir") + 1] == "=https"
+    assert "HTTPS_PROXY" not in run.call_args.kwargs["env"]
+
+
+def test_torified_downloads_fail_closed_when_no_tor_endpoint(tmp_path: Path) -> None:
+    downloader = VerifiedImageDownloader(use_torify=lambda: True)
+    with (
+        mock.patch("tails_cloner.download.tor_socks_port", return_value=None),
+        mock.patch("tails_cloner.download.subprocess.run") as run,
+        mock.patch("tails_cloner.download.subprocess.Popen") as popen,
+    ):
+        with pytest.raises(DownloadNetworkError, match="Tor SOCKS5 routing is unavailable"):
+            downloader._download_signature("https://example.invalid/s.sig", tmp_path / "s")
+        with pytest.raises(DownloadNetworkError, match="Tor SOCKS5 routing is unavailable"):
+            downloader._download_image("https://example.invalid/i.img", tmp_path / "i", None)
+    run.assert_not_called()
+    popen.assert_not_called()
 
 
 def test_oversized_signature_is_reported_as_network_error_not_raw_value_error(tmp_path: Path) -> None:
@@ -210,7 +255,7 @@ def test_https_downgrade_during_image_transfer_is_reported_as_network_error(tmp_
     destination = tmp_path / "tails-amd64-7.7.2.img"
     digest = "a" * 64
 
-    def write_signature(_url: str, path: Path) -> None:
+    def write_signature(_url: str, path: Path, _deadline: float | None = None) -> None:
         path.write_bytes(b"signature")
 
     with (
@@ -258,7 +303,9 @@ def test_fetch_checksum_text_uses_tor_when_requested() -> None:
 
     with mock.patch("tails_cloner.download.fetch_text_torified", return_value="abc") as torified:
         assert fetch_checksum_text("https://example.invalid/x.sha256", use_torify=True) == "abc"
-    torified.assert_called_once_with("https://example.invalid/x.sha256", 30)
+    torified.assert_called_once()
+    assert torified.call_args.args[0] == "https://example.invalid/x.sha256"
+    assert 1 <= torified.call_args.args[1] <= 30
 
 
 def test_image_rejects_truncated_content_length(tmp_path: Path) -> None:
@@ -287,3 +334,53 @@ def test_image_rejects_truncated_content_length(tmp_path: Path) -> None:
         pytest.raises(DownloadNetworkError, match="truncated"),
     ):
         downloader._download_image("https://example.invalid/image.img", tmp_path / "partial", None)
+
+
+def test_blocking_read_obeys_wall_clock_deadline(tmp_path: Path) -> None:
+    downloader = VerifiedImageDownloader(use_torify=lambda: False)
+
+    class SlowResponse:
+        headers = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self, _size):
+            time.sleep(0.5)
+            return b""
+
+    with (
+        mock.patch("tails_cloner.download.open_https", return_value=SlowResponse()),
+        mock.patch("tails_cloner.download.DOWNLOAD_TOTAL_TIMEOUT_SECONDS", 0.05),
+        pytest.raises(DownloadNetworkError, match="deadline"),
+    ):
+        started = time.monotonic()
+        downloader._download_image("https://example.invalid/img", tmp_path / "out", None)
+    assert time.monotonic() - started < 0.3
+
+
+def test_tor_image_callback_cancellation_terminates_curl(tmp_path: Path) -> None:
+    downloader = VerifiedImageDownloader(use_torify=lambda: True)
+    process = mock.Mock()
+    process.poll.return_value = None
+    process.wait.return_value = -15
+
+    callbacks = 0
+
+    def cancel(_progress):
+        nonlocal callbacks
+        callbacks += 1
+        if callbacks > 1:
+            raise DownloadCancelledError("user cancelled")
+
+    with (
+        mock.patch("tails_cloner.download.tor_socks_port", return_value=9050),
+        mock.patch("tails_cloner.download.torify_available", return_value=True),
+        mock.patch("tails_cloner.download.subprocess.Popen", return_value=process),
+        pytest.raises(DownloadCancelledError),
+    ):
+        downloader._download_image("https://example.invalid/image", tmp_path / "part", cancel)
+    process.terminate.assert_called_once()

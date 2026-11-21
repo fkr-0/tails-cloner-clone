@@ -4,23 +4,38 @@ The GUI and CLI deliberately use this module instead of maintaining separate
 network or verification paths.  Remote Tails images are accepted only after
 both the published SHA-256 digest and a detached OpenPGP signature chaining to
 the bundled, pinned Tails signing key have been verified.
+
+Transfers intentionally have no partial-resume or automatic retry: failed and
+cancelled .part files are removed. A new attempt fetches the complete image,
+then verifies SHA-256 and OpenPGP before atomic promotion. This avoids trusting
+unverified range responses or mixing content across mirrors/metadata epochs.
 """
 
 from __future__ import annotations
 
+import queue
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-from tails_cloner.network import fetch_text_torified, should_use_torify
+from tails_cloner.network import (
+    TorUnavailableError,
+    curl_proxy_isolated_env,
+    fetch_text_torified,
+    should_use_torify,
+    tor_curl_options,
+    tor_socks_port,
+    torify_available,
+)
 from tails_cloner.verification import (
     TAILS_SIGNING_PRIMARY_FINGERPRINT,
     parse_sha256_text,
@@ -32,6 +47,81 @@ MAX_CHECKSUM_BYTES = 256 * 1024
 MAX_SIGNATURE_BYTES = 1024 * 1024
 DOWNLOAD_CHUNK_BYTES = 1024 * 1024
 DOWNLOAD_TOTAL_TIMEOUT_SECONDS = 4 * 60 * 60
+DOWNLOAD_METADATA_TIMEOUT_SECONDS = 30
+
+
+def _tor_curl_prefix() -> list[str]:
+    """Curl argv prefix routing through a validated Tor SOCKS5 endpoint.
+
+    Shares the transport policy of ``network.fetch_text_torified``: explicit
+    ``socks5h://`` (remote DNS), HTTPS-only initial and redirect protocols and
+    no ambient proxy configuration. Never falls back to a direct connection.
+    """
+    port = tor_socks_port()
+    if port is None or not torify_available():
+        raise TorUnavailableError("Tor SOCKS5 routing is unavailable")
+    return ["curl", "--disable", "-fL", *tor_curl_options(port)]
+
+
+def _phase_deadline(absolute_deadline: float | None, phase_seconds: float) -> float:
+    """Use the tighter of the per-phase limit and the overall transfer budget."""
+    now = time.monotonic()
+    if absolute_deadline is not None and absolute_deadline <= now:
+        raise DownloadTimeoutError("Remote transfer exceeded its total deadline")
+    return min(now + phase_seconds, absolute_deadline) if absolute_deadline is not None else now + phase_seconds
+
+
+def _call_before_deadline(operation: Callable[[], Any], deadline: float) -> Any:
+    """Bound connection establishment and blocking reads, not just socket inactivity.
+
+    The worker is daemonized and must never write a candidate file. On timeout,
+    late-opened HTTP responses are closed by the worker; no promotion is possible.
+    """
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("Remote transfer exceeded its total deadline")
+    result: queue.Queue[tuple[bool, Any]] = queue.Queue(maxsize=1)
+    expired = threading.Event()
+
+    def worker() -> None:
+        try:
+            value = operation()
+            if expired.is_set() and hasattr(value, "close"):
+                value.close()
+            result.put((True, value))
+        except BaseException as error:
+            result.put((False, error))
+
+    threading.Thread(target=worker, daemon=True, name="tails-download-io").start()
+    try:
+        ok, value = result.get(timeout=remaining)
+    except queue.Empty as error:
+        expired.set()
+        raise TimeoutError("Remote transfer exceeded its total deadline") from error
+    if not ok:
+        raise value
+    if time.monotonic() > deadline:
+        expired.set()
+        if hasattr(value, "close"):
+            value.close()
+        raise TimeoutError("Remote transfer exceeded its total deadline")
+    return value
+
+
+def _read_before_deadline(response: Any, size: int, deadline: float) -> bytes:
+    """Bound a potentially blocking urllib read by absolute wall-clock time.
+
+    The daemon reader never touches the output file. Closing the response after
+    timeout is best effort; the blocked thread cannot promote partial bytes.
+    """
+    return cast(bytes, _call_before_deadline(lambda: response.read(size), deadline))
+
+
+def _reject_truncated_body(response: Any, payload: bytes, label: str) -> None:
+    """Reject short HTTPS metadata bodies even if the available prefix looks valid."""
+    declared = getattr(response, "headers", {}).get("Content-Length")
+    if declared is not None and declared.isdigit() and len(payload) != int(declared):
+        raise DownloadTruncatedError(f"{label} response truncated or exceeds declared Content-Length")
 
 
 class DownloadError(RuntimeError):
@@ -40,6 +130,27 @@ class DownloadError(RuntimeError):
 
 class DownloadNetworkError(DownloadError):
     """Remote metadata or image transfer failed."""
+
+
+class DownloadCancelledError(DownloadNetworkError):
+    """An explicit progress callback requested transfer cancellation."""
+
+
+class DownloadTimeoutError(DownloadNetworkError):
+    """The absolute transfer deadline expired, including while blocked in I/O."""
+
+
+class DownloadTruncatedError(DownloadNetworkError):
+    """The server supplied fewer or more bytes than its declared body length."""
+
+
+def _network_error(error: Exception, context: str) -> DownloadNetworkError:
+    """Keep stable, specific error classes across transport entry points."""
+    if isinstance(error, DownloadNetworkError):
+        return error
+    if isinstance(error, (TimeoutError, subprocess.TimeoutExpired)):
+        return DownloadTimeoutError(f"{context}: {error}")
+    return DownloadNetworkError(f"{context}: {error}")
 
 
 class DownloadVerificationError(DownloadError):
@@ -135,7 +246,7 @@ def open_https(url: str, *, timeout: int) -> Any:
     return build_opener(HttpsOnlyRedirectHandler()).open(url, timeout=timeout)
 
 
-def fetch_checksum_text(url: str, *, use_torify: bool) -> str:
+def fetch_checksum_text(url: str, *, use_torify: bool, absolute_deadline: float | None = None) -> str:
     """Fetch a published checksum over HTTPS (through Tor when requested).
 
     Raises ``ValueError`` for a non-HTTPS URL/redirect or an oversized response and
@@ -144,23 +255,29 @@ def fetch_checksum_text(url: str, *, use_torify: bool) -> str:
     """
     require_https_url(url, "Remote checksum")
     try:
+        deadline = _phase_deadline(absolute_deadline, DOWNLOAD_METADATA_TIMEOUT_SECONDS)
         if use_torify:
-            text = fetch_text_torified(url, 30)
+            text = cast(str, _call_before_deadline(
+                lambda: fetch_text_torified(url, max(1, int(deadline - time.monotonic()))), deadline
+            ))
             if len(text.encode("utf-8")) > MAX_CHECKSUM_BYTES:
                 raise ValueError("Published checksum response is unexpectedly large")
             return text
 
-        with open_https(url, timeout=30) as response:
+        with _call_before_deadline(
+            lambda: open_https(url, timeout=DOWNLOAD_METADATA_TIMEOUT_SECONDS), deadline
+        ) as response:
             effective_url = str(response.geturl()) if hasattr(response, "geturl") else url
             require_https_url(effective_url, "Remote checksum redirect")
-            payload: bytes = response.read(MAX_CHECKSUM_BYTES + 1)
+            payload: bytes = _read_before_deadline(response, MAX_CHECKSUM_BYTES + 1, deadline)
+            _reject_truncated_body(response, payload, "Checksum")
         if len(payload) > MAX_CHECKSUM_BYTES:
             raise ValueError("Published checksum response is unexpectedly large")
         return payload.decode("utf-8", errors="strict")
     except ValueError:
         raise
     except Exception as error:  # noqa: BLE001 - normalized at service boundary
-        raise DownloadNetworkError(f"Could not retrieve remote checksum: {error}") from error
+        raise _network_error(error, "Could not retrieve remote checksum") from error
 
 
 class VerifiedImageDownloader:
@@ -194,26 +311,19 @@ class VerifiedImageDownloader:
                 )
             )
 
-    def _read_checksum(self, url: str) -> str:
-        return fetch_checksum_text(url, use_torify=self._use_torify())
+    def _read_checksum(self, url: str, absolute_deadline: float | None = None) -> str:
+        return fetch_checksum_text(url, use_torify=self._use_torify(), absolute_deadline=absolute_deadline)
 
-    def _download_signature(self, url: str, destination: Path) -> None:
+    def _download_signature(self, url: str, destination: Path, absolute_deadline: float | None = None) -> None:
         require_https_url(url, "Remote signature")
         try:
+            deadline = _phase_deadline(absolute_deadline, DOWNLOAD_METADATA_TIMEOUT_SECONDS)
             if self._use_torify():
                 subprocess.run(
                     [
-                        "torify",
-                        "curl",
-                        "-fL",
-                        "--proto",
-                        "=https",
-                        "--proto-redir",
-                        "=https",
+                        *_tor_curl_prefix(),
                         "--max-time",
-                        "30",
-                        "--noproxy",
-                        "*",
+                        str(max(1, int(deadline - time.monotonic()))),
                         "--max-filesize",
                         str(MAX_SIGNATURE_BYTES),
                         "--output",
@@ -223,52 +333,67 @@ class VerifiedImageDownloader:
                     check=True,
                     text=True,
                     capture_output=True,
+                    timeout=max(0.001, deadline - time.monotonic()),
+                    env=curl_proxy_isolated_env(),
                 )
                 if destination.stat().st_size > MAX_SIGNATURE_BYTES:
                     raise ValueError("Published OpenPGP signature is unexpectedly large")
                 return
 
-            with open_https(url, timeout=30) as response:
+            with _call_before_deadline(
+                lambda: open_https(url, timeout=DOWNLOAD_METADATA_TIMEOUT_SECONDS), deadline
+            ) as response:
                 effective_url = str(response.geturl()) if hasattr(response, "geturl") else url
                 require_https_url(effective_url, "Remote signature redirect")
-                payload: bytes = response.read(MAX_SIGNATURE_BYTES + 1)
+                payload: bytes = _read_before_deadline(response, MAX_SIGNATURE_BYTES + 1, deadline)
+                _reject_truncated_body(response, payload, "Signature")
             if len(payload) > MAX_SIGNATURE_BYTES:
                 raise ValueError("Published OpenPGP signature is unexpectedly large")
             destination.write_bytes(payload)
         except Exception as error:  # noqa: BLE001 - normalized at service boundary
-            raise DownloadNetworkError(f"Could not retrieve remote OpenPGP signature: {error}") from error
+            raise _network_error(error, "Could not retrieve remote OpenPGP signature") from error
 
     def _download_image(
         self,
         url: str,
         destination: Path,
         callback: ProgressCallback | None,
+        absolute_deadline: float | None = None,
     ) -> None:
         require_https_url(url, "Remote IMG")
         try:
+            deadline = _phase_deadline(absolute_deadline, DOWNLOAD_TOTAL_TIMEOUT_SECONDS)
             if self._use_torify():
                 self._emit(callback, "download", "Downloading Tails IMG through Tor")
-                subprocess.run(
-                    [
-                        "torify",
-                        "curl",
-                        "-fL",
-                        "--proto",
-                        "=https",
-                        "--proto-redir",
-                        "=https",
-                        "--max-time",
-                        str(DOWNLOAD_TOTAL_TIMEOUT_SECONDS),
-                        "--noproxy",
-                        "*",
-                        "--output",
-                        str(destination),
-                        url,
-                    ],
-                    check=True,
-                    text=True,
-                    capture_output=True,
+                command = [
+                    *_tor_curl_prefix(),
+                    "--max-time", str(max(1, int(deadline - time.monotonic()))),
+                    "--output", str(destination), url,
+                ]
+                process = subprocess.Popen(
+                    command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    env=curl_proxy_isolated_env(),
                 )
+                try:
+                    while process.poll() is None:
+                        if time.monotonic() >= deadline:
+                            raise TimeoutError("IMG download exceeded its total deadline")
+                        self._emit(
+                            callback, "download", "Downloading Tails IMG through Tor",
+                            bytes_received=destination.stat().st_size if destination.exists() else 0,
+                        )
+                        time.sleep(min(0.1, max(0, deadline - time.monotonic())))
+                    if process.returncode != 0:
+                        raise subprocess.CalledProcessError(process.returncode, command)
+                except BaseException:
+                    if process.poll() is None:
+                        process.terminate()
+                        try:
+                            process.wait(timeout=2)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                            process.wait(timeout=2)
+                    raise
                 self._emit(
                     callback,
                     "download",
@@ -278,7 +403,9 @@ class VerifiedImageDownloader:
                 return
 
             with (
-                open_https(url, timeout=60) as response,
+                _call_before_deadline(
+                    lambda: open_https(url, timeout=min(60, DOWNLOAD_TOTAL_TIMEOUT_SECONDS)), deadline
+                ) as response,
                 destination.open("wb") as output,
             ):
                 effective_url = str(response.geturl()) if hasattr(response, "geturl") else url
@@ -286,15 +413,12 @@ class VerifiedImageDownloader:
                 content_length = response.headers.get("Content-Length")
                 total = int(content_length) if content_length and content_length.isdigit() else None
                 received = 0
-                started = time.monotonic()
                 self._emit(callback, "download", "Downloading Tails IMG", bytes_received=0, bytes_total=total)
-                while chunk := response.read(DOWNLOAD_CHUNK_BYTES):
-                    if time.monotonic() - started > DOWNLOAD_TOTAL_TIMEOUT_SECONDS:
-                        raise TimeoutError("IMG download exceeded its total deadline")
+                while chunk := _read_before_deadline(response, DOWNLOAD_CHUNK_BYTES, deadline):
                     output.write(chunk)
                     received += len(chunk)
                     if total is not None and received > total:
-                        raise ValueError("IMG response exceeds declared Content-Length")
+                        raise DownloadTruncatedError("IMG response exceeds declared Content-Length")
                     self._emit(
                         callback,
                         "download",
@@ -303,9 +427,11 @@ class VerifiedImageDownloader:
                         bytes_total=total,
                     )
                 if total is not None and received != total:
-                    raise ValueError(f"IMG response truncated: expected {total} bytes, got {received}")
+                    raise DownloadTruncatedError(f"IMG response truncated: expected {total} bytes, got {received}")
+        except DownloadCancelledError:
+            raise
         except Exception as error:  # noqa: BLE001 - normalized at service boundary
-            raise DownloadNetworkError(f"Could not download remote IMG: {error}") from error
+            raise _network_error(error, "Could not download remote IMG") from error
 
     def _verify_candidate(
         self,
@@ -334,6 +460,7 @@ class VerifiedImageDownloader:
         *,
         progress_callback: ProgressCallback | None = None,
     ) -> VerifiedImageResult:
+        absolute_deadline = time.monotonic() + DOWNLOAD_TOTAL_TIMEOUT_SECONDS
         for url, purpose in (
             (request.image_url, "Remote IMG"),
             (request.checksum_url, "Remote checksum"),
@@ -350,7 +477,7 @@ class VerifiedImageDownloader:
 
         self._emit(progress_callback, "metadata", "Retrieving published SHA-256")
         try:
-            checksum_text = self._read_checksum(request.checksum_url)
+            checksum_text = self._read_checksum(request.checksum_url, absolute_deadline)
             expected_digest = parse_sha256_text(checksum_text, expected_filename=filename)
         except DownloadNetworkError:
             raise
@@ -369,7 +496,7 @@ class VerifiedImageDownloader:
             ) as signature_file:
                 signature_path = Path(signature_file.name)
             self._emit(progress_callback, "metadata", "Retrieving detached OpenPGP signature")
-            self._download_signature(request.signature_url, signature_path)
+            self._download_signature(request.signature_url, signature_path, absolute_deadline)
 
             if destination.is_file():
                 self._emit(progress_callback, "reuse", f"Verifying existing file {destination}")
@@ -379,6 +506,8 @@ class VerifiedImageDownloader:
                     signature_path=signature_path,
                     callback=progress_callback,
                 )
+                if time.monotonic() >= absolute_deadline:
+                    raise DownloadTimeoutError("Remote transfer exceeded its total deadline during verification")
                 return VerifiedImageResult(
                     path=destination,
                     version=request.version,
@@ -401,13 +530,15 @@ class VerifiedImageDownloader:
                 delete=False,
             ) as output:
                 partial_path = Path(output.name)
-            self._download_image(request.image_url, partial_path, progress_callback)
+            self._download_image(request.image_url, partial_path, progress_callback, absolute_deadline)
             digest, fingerprint = self._verify_candidate(
                 partial_path,
                 expected_digest=expected_digest,
                 signature_path=signature_path,
                 callback=progress_callback,
             )
+            if time.monotonic() >= absolute_deadline:
+                raise DownloadTimeoutError("Remote transfer exceeded its total deadline during verification")
             partial_path.replace(destination)
             partial_path = None
             return VerifiedImageResult(

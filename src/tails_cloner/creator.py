@@ -13,8 +13,9 @@ from tails_cloner.blockdev import (
     run_streaming_command,
     walk_nodes,
 )
+from tails_cloner.device_identity import DeviceIdentityError, snapshot_disk
 from tails_cloner.models import PostWriteOptions
-from tails_cloner.post_write import apply_post_write_options
+from tails_cloner.post_write import MountState, PostWriteFailure, apply_post_write_options
 from tails_cloner.source import LocalImageSource
 
 RunCloneCommand = Callable[[list[str], Callable[[str], None]], int]
@@ -144,15 +145,49 @@ def clone_image_to_device(
     image.validate()
     callback = progress_callback or (lambda _message: None)
 
+    options = post_write_options or PostWriteOptions()
+    # Capture identity before any privileged write. Never infer that a reused
+    # /dev/sdX name denotes the same disk after partition-table reread.
+    expected_disk = None
+    if options.enabled and options.boot_loader_order.enabled and options.boot_loader_order.entries:
+        expected_disk = snapshot_disk(device_path)
+        if not (expected_disk.serial or expected_disk.wwn):
+            raise DeviceIdentityError('Refusing post-write mount without stable disk identity')
+
     target_preparer(device_path, image.path.stat().st_size, run_command, callback)
     exit_code = run_command(build_clone_command(image.path, device_path), callback)
     if exit_code != 0:
         raise RuntimeError(f"Clone process exited with status {exit_code}")
 
     for command in (["pkexec", "blockdev", "--rereadpt", device_path], ["udevadm", "settle"]):
-        exit_code = run_command(command, callback)
+        try:
+            exit_code = run_command(command, callback)
+        except (OSError, subprocess.SubprocessError) as error:
+            raise PostWriteFailure(
+                f"device refresh failed ({command[1]}): {type(error).__name__}",
+                MountState(device_state="unknown; partition refresh failed"),
+            ) from error
         if exit_code != 0:
-            raise RuntimeError(f"Post-write device refresh exited with status {exit_code}: {' '.join(command)}")
+            raise PostWriteFailure(
+                f"device refresh exited with status {exit_code}: {' '.join(command)}",
+                MountState(device_state="unknown; partition refresh failed"),
+            )
 
-    options = post_write_options or PostWriteOptions()
-    post_write_runner(device_path, options, callback)
+    if expected_disk is not None:
+        try:
+            identity_unchanged = snapshot_disk(device_path) == expected_disk
+        except (OSError, subprocess.SubprocessError, DeviceIdentityError) as error:
+            raise PostWriteFailure(
+                f"post-write device identity could not be verified: {type(error).__name__}",
+                MountState(device_state="unknown; identity verification failed"),
+            ) from error
+        if not identity_unchanged:
+            raise PostWriteFailure(
+                "Target disk changed after whole-disk clone",
+                MountState(device_state="unknown; disk identity changed"),
+            )
+        if post_write_runner is not apply_post_write_options:
+            raise DeviceIdentityError('Unverified post-write hook cannot receive identity binding')
+        post_write_runner(device_path, options, callback, expected_disk=expected_disk)
+    else:
+        post_write_runner(device_path, options, callback)

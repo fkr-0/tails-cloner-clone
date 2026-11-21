@@ -25,6 +25,8 @@ def validate(source: Path, desired: list[str], dry_run: bool) -> dict:
         raise ValueError("source must be a directory tree without symlinks")
     if not desired:
         raise ValueError("an entry is required")
+    if len(set(desired)) != len(desired) or any(not entry or entry != entry.strip() for entry in desired):
+        raise ValueError("requested entries must be distinct, nonempty, unpadded titles")
     before = inventory(source)
     configs = [n for n in before if Path(n).name in
                {"grub.cfg", "loopback.cfg", "syslinux.cfg", "isolinux.cfg", "live.cfg"}]
@@ -51,9 +53,21 @@ def validate(source: Path, desired: list[str], dry_run: bool) -> dict:
         preserved = inventory(source) == before
         unrelated = all(after.get(p) == sha for p, sha in before.items() if p not in changed)
         unchanged_set = set(before) <= set(after)
-        valid = bool(changed) and preserved and unrelated and unchanged_set
+        # A partial rewrite is not positive evidence: every discovered config
+        # must be parseable and contain the requested entries in that order.
+        ordered = all(
+            not r.unsupported_reason
+            and all(entry in r.entries_after for entry in desired)
+            and [entry for entry in r.entries_after if entry in desired] == desired
+            for r in results.files
+        )
+        evaluated = {r.path.relative_to(copied).as_posix() for r in results.files}
+        coverage = set(configs) == evaluated
+        valid = bool(changed) and preserved and unrelated and unchanged_set and ordered and coverage
         return {**evidence, "success": valid, "source_preserved": preserved,
-                "unrelated_bytes_preserved": unrelated, "changed_files": sorted(changed),
+                "unrelated_bytes_preserved": unrelated, "all_configs_match_order": ordered,
+                "all_configs_evaluated": coverage, "skipped_configs": sorted(set(configs) - evaluated),
+                "changed_files": sorted(changed),
                 "resulting_sha256": after,
                 "rewrites": [{"path": r.path.relative_to(copied).as_posix(),
                               "changed": r.changed, "before": r.entries_before,

@@ -129,6 +129,35 @@ def proc_cmdline() -> str:
     return read_text_if_present(Path('/proc/cmdline'))
 
 
+def running_system_evidence() -> dict[str, Any]:
+    """Capture passive boot facts; missing tools are explicit, not success signals.
+
+    This never mounts a filesystem or opens a block device for writing.
+    Collected host/guest data is evidence, not a claim of successful upgrade.
+    """
+    commands = {
+        'findmnt_json': ['findmnt', '--json', '--output', 'SOURCE,TARGET,FSTYPE,OPTIONS'],
+        'lsblk_json': [
+            'lsblk', '--json', '--bytes', '--output',
+            'NAME,PATH,PKNAME,SIZE,MODEL,VENDOR,SERIAL,WWN,MAJ:MIN,RM,HOTPLUG,TRAN,TYPE,RO,FSTYPE,LABEL,PARTTYPE,PTTYPE,MOUNTPOINTS',
+        ],
+    }
+    observations: dict[str, Any] = {
+        'proc_cmdline': proc_cmdline(),
+        'etc_os_release': read_text_if_present(Path('/etc/os-release')),
+        'proc_mounts': read_text_if_present(Path('/proc/mounts')),
+        'findmnt_live_medium_source': mount_source_for(Path('/lib/live/mount/medium')),
+        'findmnt_root_source': mount_source_for(Path('/')),
+    }
+    for key, command in commands.items():
+        try:
+            result = subprocess.run(command, check=False, text=True, capture_output=True, timeout=15)
+            observations[key] = json.loads(result.stdout) if result.returncode == 0 else None
+        except (OSError, ValueError, subprocess.SubprocessError):
+            observations[key] = None
+    return observations
+
+
 def cmdline_options() -> dict[str, str | bool]:
     options: dict[str, str | bool] = {}
     for token in shlex.split(proc_cmdline()):
@@ -284,6 +313,7 @@ def collect_probe(
         'running_tails_detection': running_tails_detection(live_version_path, source_device),
         'block_devices': block_device_info(source_device),
         'fsuuid_boot': fsuuid_boot_evidence(live_version_path),
+        'running_system_evidence': running_system_evidence(),
         'project_access': project_access(project_path),
     }
 

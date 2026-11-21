@@ -510,6 +510,8 @@ items:
     - vagrant-lab-scenario-coverage bridge command was added; direct read-only execution passed after bridge runner classified
       the command conservatively
     - remaining scenario gaps are the real-boot runtime evidence cases tracked by E2E-001, E2E-004, and E2E-005
+    - boot-order evidence is separately partial in scenarios.yml; offline synthetic directory-copy tests do not prove FAT image, visible QEMU menu ordering, or device boot
+    - follow infra/vagrant-lab/real-boot-lane/OPERATOR.md for the human-run baseline/modified QEMU screenshot comparison; do not decrement the three unresolved real-boot TODOs
     completion:
       date: '2026-05-20'
       evidence: report_scenario_coverage.py passed with 7 cases, 5 guarded commands, 0 unguarded destructive cases; test_scenario_coverage.py

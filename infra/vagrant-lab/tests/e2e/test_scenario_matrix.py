@@ -40,6 +40,20 @@ def _real_boot_lane_data() -> dict:
     return yaml.safe_load(REAL_BOOT_LANE_PATH.read_text(encoding='utf-8'))
 
 
+def test_boot_order_evidence_remains_partial_until_visible_qemu_proof() -> None:
+    scenarios = _scenario_data()
+    evidence = scenarios['boot_order_evidence']
+    assert evidence['current_status'] == 'partial'
+    assert evidence['offline_fixture']['status'] == 'partial'
+    assert evidence['offline_fixture']['evidence'].endswith('test_boot_order_evidence.py')
+    assert evidence['operator_steps'].endswith('real-boot-lane/OPERATOR.md')
+    assert evidence['expected_qemu_evidence'].endswith('boot-screen-probe-evidence.json')
+    for layer in ('fat_image', 'qemu_boot', 'visible_menu_order', 'real_device_boot'):
+        assert evidence[layer] == 'not_verified'
+    assert evidence['unresolved_real_boot_todos'] == ['E2E-001', 'E2E-004', 'E2E-005']
+    assert len(scenarios['cases']) == 7
+
+
 def test_scenario_matrix_documents_requested_install_and_upgrade_cases() -> None:
     data = _scenario_data()
     cases = set(data['cases'])

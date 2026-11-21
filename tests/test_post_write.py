@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from tails_cloner.models import BootLoaderOrderOptions, PostWriteOptions
-from tails_cloner.post_write import apply_post_write_options
+from tails_cloner.post_write import PostWriteFailure, apply_post_write_options
 
 
 def test_partition_selector_rejects_automount_and_non_vfat(monkeypatch) -> None:
@@ -99,8 +99,10 @@ def test_keyboard_interrupt_always_unmounts(monkeypatch) -> None:
     monkeypatch.setattr("tails_cloner.post_write.apply_boot_loader_order_to_directory", interrupt)
     options = PostWriteOptions(enabled=True, sync_device=False, settle_seconds=0,
                                boot_loader_order=BootLoaderOrderOptions(enabled=True, entries=["Tails"]))
-    with pytest.raises(KeyboardInterrupt):
+    with pytest.raises(PostWriteFailure) as caught:
         apply_post_write_options("/dev/sdb", options, command_runner=fake_run)
+    assert caught.value.write_succeeded is True
+    assert caught.value.device_state.startswith("unknown")
     assert any("umount" in c for c in commands)
 
 
@@ -219,7 +221,7 @@ def test_failed_unmount_never_deletes_files_under_the_mount_point(monkeypatch) -
     )
 
     try:
-        with pytest.raises(RuntimeError, match="post-write customization failed"):
+        with pytest.raises(RuntimeError, match="post-write step failed"):
             apply_post_write_options("/dev/sdb", options, command_runner=fake_run)
         assert (seen["root"] / "syslinux.cfg").read_text() == "boot config on the mounted partition"
     finally:
@@ -254,7 +256,7 @@ def test_unmount_failure_does_not_mask_the_original_error(monkeypatch) -> None:
     messages: list[str] = []
 
     try:
-        with pytest.raises(RuntimeError, match="post-write customization failed"):
+        with pytest.raises(RuntimeError, match="post-write step failed"):
             apply_post_write_options("/dev/sdb", options, messages.append, command_runner=fake_run)
         assert any("could not be unmounted" in message for message in messages)
     finally:

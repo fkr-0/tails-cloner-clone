@@ -57,3 +57,27 @@ def test_reject_symlink_tree(tmp_path: Path) -> None:
     (tmp_path / "link").symlink_to(original, target_is_directory=True)
     with pytest.raises(ValueError):
         module.validate(tmp_path / "link", ["A"], True)
+
+
+def test_missing_requested_entry_cannot_be_success(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (tmp_path / "grub.cfg").write_text("menuentry 'A' {}\nmenuentry 'B' {}\n")
+    monkeypatch.setenv("TAILS_CLONER_LAB_ALLOW_DESTRUCTIVE", "1")
+    result = module.validate(tmp_path, ["B", "A", "Missing"], False)
+    assert result["success"] is False
+
+
+@pytest.mark.parametrize("entries", [["B", "B"], ["B", ""], [" B", "A"]])
+def test_reject_ambiguous_requested_entries(tmp_path: Path, entries: list[str]) -> None:
+    (tmp_path / "grub.cfg").write_text("menuentry 'A' {}\nmenuentry 'B' {}\n")
+    with pytest.raises(ValueError, match="requested entries"):
+        module.validate(tmp_path, entries, True)
+
+
+def test_unsupported_second_config_cannot_be_hidden_by_successful_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "grub.cfg").write_text("menuentry 'A' {}\nmenuentry 'B' {}\n")
+    (tmp_path / "syslinux.cfg").write_text("DEFAULT linux\n")
+    monkeypatch.setenv("TAILS_CLONER_LAB_ALLOW_DESTRUCTIVE", "1")
+    result = module.validate(tmp_path, ["B", "A"], False)
+    assert result["success"] is False

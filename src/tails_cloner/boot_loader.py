@@ -1,13 +1,88 @@
 from __future__ import annotations
 
+import contextvars
+import ctypes
+import errno
+import hashlib
 import os
 import re
-import shutil
 import stat
 import tempfile
 from collections import Counter
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
+
+
+def _pinned_parent(path: Path) -> int:
+    """Traverse the absolute parent path without following symlink components."""
+    components = Path(os.path.abspath(path)).parent.parts[1:]
+    fd = os.open(os.sep, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for component in components:
+            next_fd = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _source_snapshot(path: Path) -> tuple[bytes, os.stat_result]:
+    parent_fd = _pinned_parent(path)
+    try:
+        fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent_fd)
+        try:
+            before = os.fstat(fd)
+            if not stat.S_ISREG(before.st_mode):
+                raise ValueError(f"unsafe non-regular boot-loader source: {path}")
+            with os.fdopen(os.dup(fd), "rb") as handle:
+                raw = handle.read()
+            after = os.fstat(fd)
+            if (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+                raise RuntimeError(f"boot-loader source changed during read: {path}")
+            return raw, after
+        finally:
+            os.close(fd)
+    finally:
+        os.close(parent_fd)
+
+
+def _assert_source_unchanged(path: Path, raw: bytes, original_stat: os.stat_result) -> None:
+    current, snapshot = _source_snapshot(path)
+    if ((snapshot.st_dev, snapshot.st_ino, snapshot.st_mtime_ns, snapshot.st_ctime_ns)
+            != (original_stat.st_dev, original_stat.st_ino, original_stat.st_mtime_ns, original_stat.st_ctime_ns)
+            or hashlib.sha256(current).digest() != hashlib.sha256(raw).digest()):
+        raise RuntimeError(f"boot-loader source identity/content conflict: {path}")
+
+
+class BackupDurabilityError(OSError):
+    """Backup name published, but parent directory sync failed; durability uncertain."""
+
+
+class ReplacementDurabilityError(OSError):
+    """Destination was renamed successfully, but its directory sync failed."""
+
+    replacement_applied = True
+
+
+class RollbackConflictError(RuntimeError):
+    """Refuse to roll back untrusted backup or independently changed target."""
+
+
+class UnsupportedBootLoaderConfigError(ValueError):
+    """A relevant config cannot be safely reordered; no directory writes began."""
+
+    def __init__(self, path: Path, reason: str):
+        self.path = path
+        self.reason = reason
+        super().__init__(f"unsupported boot-loader config {path}: {reason}")
+
+
+_last_applied: contextvars.ContextVar[dict[Path, tuple[bytes, os.stat_result]] | None] = contextvars.ContextVar("boot_loader_last_applied", default=None)
+
+_write_guard: contextvars.ContextVar[tuple[Path, bytes, os.stat_result] | None] = contextvars.ContextVar("boot_loader_write_guard", default=None)
 
 BOOT_LOADER_CONFIG_GLOBS = (
     "**/grub.cfg",
@@ -15,6 +90,7 @@ BOOT_LOADER_CONFIG_GLOBS = (
     "**/syslinux.cfg",
     "**/isolinux.cfg",
     "**/live.cfg",
+    "**/live64.cfg",
 )
 
 _GRUB_MENUENTRY_RE = re.compile(r"^[ \t]*menuentry\s+(['\"])(?P<title>.+?)\1", re.MULTILINE)
@@ -309,28 +385,79 @@ def _sync_directory(directory: Path) -> None:
         pass
 
 
+def _copy_file_metadata(fd: int, source: os.stat_result) -> None:
+    """FAT mount options synthesize Unix metadata; tolerate unsupported operations."""
+    unsupported = {errno.EPERM, errno.EINVAL, errno.EOPNOTSUPP}
+    try:
+        os.fchmod(fd, stat.S_IMODE(source.st_mode))
+    except OSError as error:
+        if error.errno not in unsupported:
+            raise
+    if (os.fstat(fd).st_uid, os.fstat(fd).st_gid) != (source.st_uid, source.st_gid):
+        try:
+            os.fchown(fd, source.st_uid, source.st_gid)
+        except OSError as error:
+            if error.errno not in unsupported:
+                raise
+
+
+def _rename_no_replace(source_name: str, destination_name: str, parent_fd: int) -> None:
+    """Linux renameat2 RENAME_NOREPLACE; vfat supports this since Linux 4.9."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    renameat2 = getattr(libc, "renameat2", None)
+    if renameat2 is None:
+        raise OSError(errno.ENOSYS, "atomic no-clobber rename unavailable")
+    renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    renameat2.restype = ctypes.c_int
+    if renameat2(parent_fd, os.fsencode(source_name), parent_fd, os.fsencode(destination_name), 1):
+        value = ctypes.get_errno()
+        raise OSError(value, os.strerror(value))
+
+
 def _atomic_replace_bytes(path: Path, data: bytes, source_stat: os.stat_result) -> None:
     """Stage in the same directory, sync data and replace a regular file."""
-    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    parent_fd = _pinned_parent(path)
+    # /proc/self/fd resolves the pinned directory even if its old name is moved.
+    pinned_dir = Path(f"/proc/self/fd/{parent_fd}")
+    try:
+        descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=pinned_dir)
+    except BaseException:
+        os.close(parent_fd)
+        raise
     temporary = Path(temporary_name)
     try:
         with os.fdopen(descriptor, "wb") as handle:
             handle.write(data)
             handle.flush()
-            os.fchmod(handle.fileno(), stat.S_IMODE(source_stat.st_mode))
-            if (os.fstat(handle.fileno()).st_uid, os.fstat(handle.fileno()).st_gid) != (
-                source_stat.st_uid, source_stat.st_gid
-            ):
-                os.fchown(handle.fileno(), source_stat.st_uid, source_stat.st_gid)
+            _copy_file_metadata(handle.fileno(), source_stat)
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
-        _sync_directory(path.parent)
+        guard = _write_guard.get()
+        if guard is not None and guard[0] == path:
+            _assert_source_unchanged(path, guard[1], guard[2])
+            # A renamed parent cannot redirect the pinned destination.
+            parent_now = os.stat(path.parent, follow_symlinks=False)
+            parent_pinned = os.fstat(parent_fd)
+            if (parent_now.st_dev, parent_now.st_ino) != (parent_pinned.st_dev, parent_pinned.st_ino):
+                raise RuntimeError(f"boot-loader parent directory changed: {path}")
+        # The final path operation never re-traverses a mutable parent pathname.
+        os.replace(temporary.name, path.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        applied = _last_applied.get()
+        if applied is not None:
+            applied[path] = _source_snapshot(path)
+        try:
+            os.fsync(parent_fd)
+        except OSError as error:
+            raise ReplacementDurabilityError(
+                error.errno, f"replacement applied, directory durability unknown: {path}"
+            ) from error
     finally:
         temporary.unlink(missing_ok=True)
+        os.close(parent_fd)
 
 
-def _read_config(path: Path) -> tuple[bytes, str | None, str]:
-    raw = path.read_bytes()
+def _read_config(path: Path, raw: bytes | None = None) -> tuple[bytes, str | None, str]:
+    if raw is None:
+        raw, _ = _source_snapshot(path)
     try:
         text = raw.decode("utf-8", errors="strict")
     except UnicodeDecodeError:
@@ -369,34 +496,54 @@ def _verify_rewrite_shape(original: str, rewritten: str) -> bool:
 
 
 def _create_backup(path: Path, original: bytes) -> Path:
-    # O_EXCL avoids clobbering a backup made by a concurrent/earlier invocation.
-    for _ in range(10000):
-        candidate = _backup_path(path)
-        try:
-            with candidate.open("xb") as handle:
-                handle.write(original)
-                handle.flush()
-                os.fsync(handle.fileno())
-            shutil.copystat(path, candidate, follow_symlinks=False)
-            _sync_directory(candidate.parent)
-            return candidate
-        except FileExistsError:
-            continue
-        except BaseException:
-            candidate.unlink(missing_ok=True)
-            raise
-    raise RuntimeError(f"exhausted boot-loader backup names for {path}")
+    """Publish a fully synced staged backup via atomic no-clobber rename."""
+    parent_fd = _pinned_parent(path)
+    temporary: str | None = None
+    try:
+        source = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+        fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.backup.", dir=f"/proc/self/fd/{parent_fd}")
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(original)
+            handle.flush()
+            _copy_file_metadata(handle.fileno(), source)
+            os.fsync(handle.fileno())
+        for counter in range(10000):
+            suffix = ".tails-cloner.bak" if counter == 0 else f".tails-cloner.{counter}.bak"
+            name = path.name + suffix
+            try:
+                _rename_no_replace(Path(temporary).name, name, parent_fd)
+            except FileExistsError:
+                continue
+            try:
+                os.fsync(parent_fd)
+            except OSError as error:
+                raise BackupDurabilityError(error.errno, f"backup publication durability uncertain: {path}") from error
+            return path.with_name(name)
+        raise RuntimeError(f"exhausted boot-loader backup names for {path}")
+    finally:
+        if temporary is not None:
+            with suppress(FileNotFoundError):
+                os.unlink(Path(temporary).name, dir_fd=parent_fd)
+        os.close(parent_fd)
 
 
 def _restore_backups(
-    restores: list[tuple[Path, Path, os.stat_result]],
+    restores: list[tuple[Path, Path, os.stat_result, bytes]],
     cause: Exception,
 ) -> None:
     errors: list[Exception] = []
-    for path, backup, original_stat in reversed(restores):
+    for path, backup, original_stat, trusted_original in reversed(restores):
         try:
-            _atomic_replace_bytes(path, backup.read_bytes(), original_stat)
-            if path.read_bytes() != backup.read_bytes():
+            backup_raw, backup_stat = _source_snapshot(backup)
+            if backup_raw != trusted_original or not stat.S_ISREG(backup_stat.st_mode):
+                raise RollbackConflictError(f"rollback backup provenance conflict: {backup}")
+            applied = _last_applied.get()
+            if applied is None or path not in applied:
+                raise RollbackConflictError(f"rollback target ownership unknown: {path}")
+            written, written_stat = applied[path]
+            _assert_source_unchanged(path, written, written_stat)
+            _atomic_replace_bytes(path, trusted_original, original_stat)
+            if path.read_bytes() != trusted_original:
                 raise RuntimeError(f"rollback verification failed for {path}")
         except Exception as error:
             errors.append(error)
@@ -405,10 +552,8 @@ def _restore_backups(
 
 
 def apply_boot_loader_order_to_file(path: Path, desired_order: list[str]) -> BootLoaderFileApplyResult:
-    if path.is_symlink() or not path.is_file():
-        raise ValueError(f"unsafe boot-loader path (not a regular non-symlink file): {path}")
-    original_stat = path.stat()
-    raw, original, unsupported = _read_config(path)
+    raw, original_stat = _source_snapshot(path)
+    raw, original, unsupported = _read_config(path, raw)
     if original is None:
         return BootLoaderFileApplyResult(path, False, [], [], unsupported_reason=unsupported)
     rewritten, result = rewrite_boot_loader_config_text(original, desired_order)
@@ -424,20 +569,31 @@ def apply_boot_loader_order_to_file(path: Path, desired_order: list[str]) -> Boo
     data = rewritten.encode("utf-8")
     if b"\r\n" in raw:
         data = data.replace(b"\n", b"\r\n")
+    _assert_source_unchanged(path, raw, original_stat)
     backup = _create_backup(path, raw)
+    writes_token = _last_applied.set({})
     replaced = False
     try:
-        _atomic_replace_bytes(path, data, original_stat)
+        token = _write_guard.set((path, raw, original_stat))
+        try:
+            _atomic_replace_bytes(path, data, original_stat)
+        finally:
+            _write_guard.reset(token)
         replaced = True
         verified_raw, verified, reason = _read_config(path)
         expected_entries = reorder_entries(result.entries_before, desired_order)
         actual_entries = parse_boot_loader_entries_from_text(verified or "") if not reason else []
         if verified_raw != data or actual_entries != expected_entries:
             raise RuntimeError(f"boot-loader rewrite verification failed for {path}: expected {expected_entries}, got {actual_entries}")
-    except Exception as error:
-        if replaced or path.read_bytes() != raw:
-            _restore_backups([(path, backup, original_stat)], error)
+    except ReplacementDurabilityError:
+        # Rename already happened; do not misreport an unchanged target.
         raise
+    except Exception as error:
+        if replaced:
+            _restore_backups([(path, backup, original_stat, raw)], error)
+        raise
+    finally:
+        _last_applied.reset(writes_token)
     return BootLoaderFileApplyResult(path, True, result.entries_before, actual_entries, backup_path=backup)
 
 
@@ -448,26 +604,56 @@ def apply_boot_loader_order_to_directory(root: Path, desired_order: list[str]) -
     ExceptionGroup exposes both errors and retains individual backup files.
     """
     files: list[BootLoaderFileApplyResult] = []
-    restores: list[tuple[Path, Path, os.stat_result]] = []
+    restores: list[tuple[Path, Path, os.stat_result, bytes]] = []
     seen: set[Path] = set()
     candidates = sorted({candidate for pattern in BOOT_LOADER_CONFIG_GLOBS for candidate in root.glob(pattern)})
+    eligible: list[Path] = []
+    # Preflight every eligible file before creating even the first backup.
+    # Filename matches are relevant even when their encoding is opaque.
+    for candidate in candidates:
+        if candidate.is_symlink() or not candidate.is_file():
+            continue
+        if root.is_symlink() or any(
+            part.is_symlink() for part in candidate.parents
+            if part != root and root in part.parents
+        ):
+            continue
+        raw, _ = _source_snapshot(candidate)
+        _, text, reason = _read_config(candidate, raw)
+        if text is None:
+            raise UnsupportedBootLoaderConfigError(candidate, reason)
+        # Include-only dispatchers and empty configs have no entries to move.
+        # A malformed menu declaration must still fail closed.
+        if not re.search(r"(?im)^[ \t]*(?:menuentry|submenu|label|menu[ \t]+label)\b", text):
+            continue
+        rewritten, rewrite = rewrite_boot_loader_config_text(text, desired_order)
+        if rewrite.unsupported_reason:
+            raise UnsupportedBootLoaderConfigError(candidate, rewrite.unsupported_reason)
+        if not rewrite.entries_before:
+            continue
+        if rewrite.changed and not _verify_rewrite_shape(text, rewritten):
+            raise UnsupportedBootLoaderConfigError(candidate, "rewrite shape verification failed")
+        eligible.append(candidate)
+    writes_token = _last_applied.set({})
     try:
-        for candidate in candidates:
-            if candidate in seen or candidate.is_symlink() or not candidate.is_file():
+        for candidate in eligible:
+            if candidate in seen:
                 continue
             seen.add(candidate)
-            # Refuse every symlink in the ancestry, not just the config leaf.
-            if root.is_symlink() or any(part.is_symlink() for part in candidate.parents if part != root and root in part.parents):
-                continue
-            raw, text, _ = _read_config(candidate)
-            if text is None or not parse_boot_loader_entries_from_text(text):
-                continue
+            raw, _ = _source_snapshot(candidate)
             source_stat = candidate.stat()
             result = apply_boot_loader_order_to_file(candidate, desired_order)
             files.append(result)
             if result.changed and result.backup_path is not None:
-                restores.append((candidate, result.backup_path, source_stat))
+                restores.append((candidate, result.backup_path, source_stat, raw))
+                # File apply restores its own context; directory transaction tracks
+                # each successfully applied target independently.
+                applied = _last_applied.get()
+                if applied is not None:
+                    applied[candidate] = _source_snapshot(candidate)
     except Exception as error:
         _restore_backups(restores, error)
         raise
+    finally:
+        _last_applied.reset(writes_token)
     return BootLoaderApplyResult(files=files)

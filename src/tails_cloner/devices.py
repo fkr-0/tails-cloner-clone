@@ -24,7 +24,7 @@ from tails_cloner.source import (
 
 LSBLK_COLUMNS = (
     "NAME,PATH,PKNAME,SIZE,MODEL,VENDOR,SERIAL,WWN,MAJ:MIN,RM,HOTPLUG,TRAN,TYPE,RO,"
-    "FSTYPE,LABEL,PARTTYPE,PTTYPE,MOUNTPOINTS"
+    "FSTYPE,LABEL,UUID,PARTUUID,PARTLABEL,PARTTYPE,PTTYPE,MOUNTPOINTS"
 )
 MIN_INSTALLATION_SIZE_GB = 8
 MIN_UPGRADE_SIZE_GB = 16
@@ -86,7 +86,14 @@ def find_stable_device_path(
 def _normalize_root_source(source: str) -> str:
     source = source.strip()
     if source.startswith("/dev/"):
-        return source.split("[", 1)[0]
+        source = source.split("[", 1)[0]
+        if source.startswith(("/dev/disk/by-id/", "/dev/disk/by-path/")):
+            try:
+                resolved = Path(source).resolve(strict=True)
+            except (OSError, RuntimeError):
+                return source  # An unresolved alias must fail closed.
+            return str(resolved) if str(resolved).startswith("/dev/") else source
+        return source
     return ""
 
 
@@ -105,12 +112,70 @@ def _find_running_root_source(run: RunCommand) -> str:
     return _normalize_root_source(result.stdout)
 
 
+def _source_backing_disks(payload: dict[str, Any], source: str) -> tuple[set[str], bool]:
+    """Map a source through lsblk descendants to physical disks; refuse ambiguity.
+
+    A mapper/crypt node can occur below multiple disks (e.g. LVM/RAID).
+    Every contributing disk must be protected. A detached or unrepresented
+    source is *not* evidence that any candidate is safe.
+    """
+    source = _normalize_root_source(source)
+    if not source:
+        return set(), False
+    by_prefix = {
+        "/dev/disk/by-uuid/": "uuid",
+        "/dev/disk/by-partuuid/": "partuuid",
+        "/dev/disk/by-partlabel/": "partlabel",
+        "/dev/disk/by-label/": "label",
+    }
+    alias_field = next((field for prefix, field in by_prefix.items() if source.startswith(prefix)), "")
+    alias_value = source.rsplit("/", 1)[-1] if alias_field else ""
+    matched: dict[str, set[str]] = {}
+    disks: set[str] = set()
+    loop_backing_unknown = False
+    for disk in payload.get("blockdevices", []):
+        if not isinstance(disk, dict) or disk.get("type") != "disk":
+            continue
+        disk_path = str(disk.get("path") or "")
+        disk_nodes = list(walk_nodes([disk]))
+        has_loop = any(node.get("type") == "loop" or str(node.get("path") or "").startswith("/dev/loop") for node in disk_nodes)
+        for node in disk_nodes:
+            node_path = str(node.get("path") or "")
+            if node_path == source or (alias_field and str(node.get(alias_field) or "") == alias_value):
+                matched.setdefault(node_path, set()).add(str(node.get("maj:min") or ""))
+                disks.add(disk_path)
+                # lsblk ancestry cannot establish where a loop backing file
+                # lives. It may be on any candidate disk, including target.
+                if has_loop:
+                    loop_backing_unknown = True
+    # A repeated node in separate disk trees is legitimate (multi-PV DM), but
+    # distinct aliases with the same filesystem label are ambiguous.
+    # The same DM node may legitimately appear beneath multiple parent disks;
+    # inconsistent kernel identity for one path is not a trustworthy join.
+    # A missing MAJ:MIN must never authenticate a mapper/RAID identity.
+    # The same pathname in multiple branches is meaningful only when every
+    # branch independently reports the same nonempty kernel device identity.
+    unique_identity = len(matched) == 1 and all(
+        len(values) == 1 and all(re.fullmatch(r"[0-9]+:[0-9]+", value) for value in values)
+        for values in matched.values()
+    )
+    if loop_backing_unknown or source.startswith("/dev/loop"):
+        return set(), False
+    return disks, bool(disks) and unique_identity
+
+
 def parse_lsblk_json(
     payload: dict[str, Any], *, running_root_source: str = "",
     running_live_source: str = "", live_source_ambiguous: bool = False,
 ) -> list[BlockDevice]:
     normalized_root_source = _normalize_root_source(running_root_source)
-    live_parent = get_parent_disk_path(running_live_source) if running_live_source else ""
+    root_disks, root_resolved = _source_backing_disks(payload, running_root_source)
+    live_disks, live_resolved = _source_backing_disks(payload, running_live_source)
+    root_ambiguous = bool(normalized_root_source) and not root_resolved
+    live_ambiguous = bool(running_live_source) and not live_resolved
+    # Do not infer physical ancestry from a /dev/sdX naming convention.
+    # Without a matching lsblk node and MAJ:MIN, even a plausible partition
+    # name may refer to a stale, renamed or otherwise unverified source.
     devices: list[BlockDevice] = []
     for raw_item in payload.get("blockdevices", []):
         if not isinstance(raw_item, dict):
@@ -139,11 +204,10 @@ def parse_lsblk_json(
             for node in system_nodes
             for mountpoint in _node_mountpoints(node)
         )
-        if normalized_root_source:
-            is_current_system_device = is_current_system_device or any(
-                str(node.get("path") or "") == normalized_root_source for node in system_nodes
-            )
-        if live_source_ambiguous or (live_parent and get_parent_disk_path(path) == live_parent):
+        if normalized_root_source and (root_ambiguous or path in root_disks):
+            is_current_system_device = True
+            is_host_system_device = True
+        if live_source_ambiguous or live_ambiguous or path in live_disks:
             is_current_system_device = True
             is_host_system_device = True
 
@@ -218,12 +282,15 @@ class DeviceService:
             live_source = get_running_tails_device() or ""
             # A live root can be overlay/loop/mapper-backed. Without reliable
             # physical ancestry, never offer a disk as a write target.
-            live_source_ambiguous = not live_source or get_parent_disk_path(live_source).startswith(
-                ("/dev/loop", "/dev/mapper", "/dev/dm-", "/dev/md")
+            live_source_ambiguous = not live_source or (
+                not _source_backing_disks(payload, live_source)[1]
+                and get_parent_disk_path(live_source).startswith(
+                    ("/dev/loop", "/dev/mapper", "/dev/dm-", "/dev/md")
+                )
             )
-        if boot_recognized and not mount_recognized:
+        if boot_recognized != mount_recognized:
             live_source_ambiguous = True
-        if mount_recognized and live_source and not any(
+        if mount_recognized and live_source and not _source_backing_disks(payload, live_source)[1] and not any(
             get_parent_disk_path(str(item.get("path") or "")) == get_parent_disk_path(live_source)
             for item in payload.get("blockdevices", []) if isinstance(item, dict) and item.get("type") == "disk"
         ):

@@ -14,6 +14,7 @@ from tails_cloner.source import (
     get_parent_disk_path,
     get_running_tails_device,
     get_running_tails_version,
+    has_running_tails_boot_signals,
     is_running_tails,
 )
 from tails_cloner.verification import verify_sha256
@@ -108,7 +109,11 @@ class ApplicationController:
 
     def detect_running_tails(self) -> None:
         """Detect if running from Tails and update state accordingly."""
-        running = is_running_tails()
+        mount_recognized = is_running_tails()
+        boot_recognized = has_running_tails_boot_signals()
+        # A stale live mount marker and a booted live OS with an unmounted
+        # medium are both ambiguous. Neither authenticates a RUNNING source.
+        running = mount_recognized and boot_recognized
         self.state.running_tails_available = running
         if running:
             self.state.running_tails_version = get_running_tails_version() or "Unknown"
@@ -116,8 +121,14 @@ class ApplicationController:
             self.state.source_mode = SourceMode.RUNNING
             self.state.status_message = f"Running from Tails {self.state.running_tails_version}. Ready to clone."
         else:
+            self.state.running_tails_device = ""
+            self.state.running_tails_version = ""
             self.state.source_mode = SourceMode.LOCAL
-            self.state.status_message = "Not running from Tails. Use a downloaded image."
+            self.state.status_message = (
+                "Running Tails signals disagree; running source unavailable. Use a verified image."
+                if mount_recognized != boot_recognized
+                else "Not running from Tails. Use a downloaded image."
+            )
 
     def _detect_running_tails(self) -> None:
         """Backward-compatible private alias for older callers/tests."""
