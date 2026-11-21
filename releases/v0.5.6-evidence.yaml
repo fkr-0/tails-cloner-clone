@@ -1,0 +1,121 @@
+schema: release-evidence/v1
+schema_version: 1
+release:
+  unit: tails-cloner repository
+  candidate_version: 0.5.6
+  base_revision: ba9659f5bfa87d160721a558dbdc5b15485efe85
+  target_revision: 2e987cf35b4b019152a068cc5527c2792cdb2431
+  members:
+    - tails-cloner-clone
+  revision_vector:
+    tails-cloner: 2e987cf35b4b019152a068cc5527c2792cdb2431
+metadata:
+  version_sources:
+    - pyproject.toml
+    - src/tails_cloner/__init__.py
+    - uv.lock
+    - tests/test_packaging.py
+  changelog: CHANGELOG.md
+  tag:
+    proposed: v0.5.6
+    created: false
+    target: null
+preflight:
+  branch: main
+  dirty_paths:
+    - README.md
+    - infra/vagrant-lab/real-boot-lane/OPERATOR.md
+    - src/tails_cloner/app.py
+    - src/tails_cloner/boot_loader.py
+    - src/tails_cloner/cli.py
+    - src/tails_cloner/cli_events.py
+    - src/tails_cloner/devices.py
+    - src/tails_cloner/download.py
+    - src/tails_cloner/network.py
+    - src/tails_cloner/post_write.py
+    - src/tails_cloner/remote_index.py
+    - src/tails_cloner/source.py
+    - tests/test_app.py
+    - tests/test_boot_loader.py
+    - tests/test_cli.py
+    - tests/test_cli_events.py
+    - tests/test_devices.py
+    - tests/test_download.py
+    - tests/test_network.py
+    - tests/test_post_write.py
+    - tests/test_remote_index.py
+    - tests/test_source.py
+    - uv.lock
+    - infra/vagrant-lab/real-boot-lane/boot_order_evidence.py
+    - infra/vagrant-lab/tests/e2e/test_boot_order_evidence.py
+    - src/tails_cloner/image_probe.py
+    - tests/test_boot_loader_apply.py
+    - tests/test_boot_loader_discovery.py
+    - docs/cli-command-spec.md (previously ignored)
+  tool_versions:
+    python: "3.13.11"
+    uv: "0.9.26"
+    ruff: "0.14.7"
+checks:
+  - name: worktree unit and regression tests
+    command: uv run --locked --extra dev python -m pytest -q -o addopts='' tests
+    exit_code: 0
+    result: 317 passed, 1 skipped, 2 subtests passed
+    scope: includes still-uncommitted TOR transport changes
+  - name: committed source archive tests
+    command: PYTHONPATH=/tmp/tails-cloner-v056-commit.oh37jf/src uv run --locked --extra dev python -m pytest -q -rs -o addopts='' /tmp/tails-cloner-v056-commit.oh37jf/tests
+    exit_code: 0
+    result: 310 passed, 4 skipped, 2 subtests passed
+    scope: exact committed source at target_revision; skips optional nested Tails checkout/workspace
+  - name: offline boot-order evidence tests
+    command: uv run --locked --extra dev python -m pytest -q -o addopts='' infra/vagrant-lab/tests/e2e/test_boot_order_evidence.py
+    exit_code: 0
+    result: 4 passed (disposable synthetic fixture)
+  - name: Ruff lint
+    command: uvx ruff check .
+    exit_code: 0
+    result: All checks passed
+  - name: mypy strict typecheck
+    command: uv run --locked --extra dev mypy src tests
+    exit_code: 0
+    result: Success, no issues found in 48 source files
+  - name: Python compile
+    command: uv run --locked --extra dev python -m compileall -q src
+    exit_code: 0
+    result: passed
+  - name: lock consistency and CLI version
+    command: uv run --locked --extra dev python -m tails_cloner --version
+    exit_code: 0
+    result: tails-cloner-clone 0.5.6
+  - name: build sdist and wheel from committed source archive
+    command: uv build --offline /tmp/tails-cloner-v056-commit.oh37jf --out-dir /tmp/tails-cloner-v056-commit.oh37jf/dist
+    exit_code: 0
+    result: sdist and wheel built; no AppImage or external release
+  - name: built wheel CLI smoke
+    command: uv run --offline --no-project --with /tmp/tails-cloner-v056-commit.oh37jf/dist/tails_cloner_clone-0.5.6-py3-none-any.whl tails-cloner-clone --version
+    exit_code: 0
+    result: tails-cloner-clone 0.5.6; --help also passed
+  - name: Git diff whitespace check
+    command: git diff --check
+    exit_code: 0
+    result: passed
+artifacts:
+  - path: /tmp/tails-cloner-v056-commit.oh37jf/dist/tails_cloner_clone-0.5.6.tar.gz
+    kind: sdist
+    size_bytes: 131522
+    sha256: 1d6850e0e9fcd90bac8ea530d2dc162e5aa77fea0cc1ba4ce9af3b01b7e775f7
+  - path: /tmp/tails-cloner-v056-commit.oh37jf/dist/tails_cloner_clone-0.5.6-py3-none-any.whl
+    kind: wheel
+    size_bytes: 91751
+    sha256: 3bf4b2ba255fe04e4f667c8e397265d00fbcaddec7fccec3059dab93a40131cb
+warnings:
+  - Independent review of boot-loader file apply and post-write target-identity binding remains pending; do not mark hardware-safe.
+  - No full AppImage build/smoke, Tails VM/QEMU boot, visible menu verification or real-device mutation was performed. Existing AppImage script deletes existing dist/build artifacts and downloads a tool, so was not run.
+  - TOR remote hardening on download.py/network.py/remote_index.py and related tests is intentionally excluded from target_revision; those six files remain dirty under active claim 6edb17b8.
+  - uv lock --offline attempted and failed because mypy resolver metadata was not cached. The local editable package version was updated narrowly in uv.lock; uv run --locked succeeded afterwards.
+  - Setuptools reported deprecated project.license table and classifiers, not a current build failure.
+side_effects:
+  pushed: false
+  published: false
+  deployed: false
+  state: not_requested
