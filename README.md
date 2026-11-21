@@ -32,7 +32,7 @@ Key invariants:
 
 ## Requirements
 
-The write path uses standard Linux tools including `lsblk`, `pkexec`, `dd`, `mount`, `umount`, `blockdev`, `udevadm`, `losetup`, and `gpg`. Remote downloads fail closed when GnuPG is unavailable. When a local Tor SOCKS port is detected, existing Tor-aware network behavior uses `torify` and `curl`; otherwise HTTPS is used directly.
+The write path uses standard Linux tools including `lsblk`, `pkexec`, `dd`, `mount`, `umount`, `blockdev`, `udevadm`, `losetup`, and `gpg`. Remote downloads fail closed when GnuPG is unavailable. By default, catalog and download requests use `torify`/`curl` when both `torify` and a local Tor SOCKS listener appear available, and otherwise use direct HTTPS.
 
 ## CLI command tree
 
@@ -96,6 +96,12 @@ tails-cloner-clone versions list \
 ```
 
 Remote image/checksum/signature URLs themselves remain HTTPS-only.
+
+### Tor transport policy and limitations
+
+Set `TAILS_CLONER_TOR_MODE=required` before starting the CLI or GUI to reject catalog/download operations when `torify` or the local SOCKS listener is unavailable. The default `auto` mode **permits direct HTTPS** whenever that heuristic is not met. Torified `curl` transfers ignore ambient proxy variables and reject plaintext redirects; catalog data and published signatures/checksums have size bounds, and IMG transfers have a total-time limit and integrity checks.
+
+This is transport hardening, **not a verified anonymity guarantee**. A listening SOCKS port does not prove that every request, DNS lookup, or subprocess is routed through Tor. The required mode has not been validated on a real Tails boot, and the app has not undergone a packet-capture/DNS-leak audit. Use a separately verified system-wide Tor policy for anonymity-sensitive workflows; do not assume `auto` is leak-free.
 
 ## Inspect current state and devices
 

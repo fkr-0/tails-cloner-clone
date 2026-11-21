@@ -21,7 +21,17 @@
 ### Offline Qualification and Limits
 
 - Add synthetic ISO/discovery, multi-file rollback, event-order, CLI refusal, live-medium and GUI regressions; add an offline directory-copy boot-order evidence script and operator runbook.
-- No real-device write, real Tails boot, visible boot-menu order, or QEMU boot-compatibility proof was performed for this candidate. Independent file-apply and post-write target-identity reviews remain required before release tagging. Tor-transport lane changes are still under a separate integration claim and are **not** part of this candidate.
+
+### Tor and Remote Download Hardening
+
+- Add opt-in `TAILS_CLONER_TOR_MODE=required` refusal when `torify` or a local SOCKS listener is unavailable; retain direct HTTPS fallback in the default `auto` mode.
+- Reject HTTPS-to-HTTP catalog redirects before following them; bound remote catalog responses to 1 MiB, isolate torified curl from ambient proxy variables, and cap signature/IMG transfer time.
+- Detect declared IMG Content-Length truncation and overshoot. Extend focused regression tests for routing, redirects, response limits, and truncated transfers.
+
+### Release Gating
+
+- No real-device write, real Tails boot, visible boot-menu order, or QEMU boot-compatibility proof was performed for this candidate. Independent file-apply and post-write target-identity reviews remain required before release tagging.
+- Tor anonymity/DNS routing and the required mode on real Tails remain unqualified; the new transport changes are covered by offline unit tests only.
 
 ## v0.5.5 - 2026-10-12
 
