@@ -57,6 +57,13 @@ real-device boot compatibility.
 
 Expose the same core capabilities as the GUI for CLI-capable users and for automation in the Vagrant/Tails lab, while keeping dangerous write operations explicit and hard to trigger accidentally.
 
+## Historical proposal — non-normative (not the v1 CLI contract)
+
+The following roadmap is retained for design history only. In particular,
+`--quiet` and `--dry-run` have **not** been implemented. Options below may be
+scoped differently or absent in the current parser; use the current v1 contract
+above and `tails-cloner-clone --help` for supported invocation syntax.
+
 ## Proposed command shape
 
 ```text

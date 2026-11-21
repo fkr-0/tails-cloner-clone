@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
+import pytest
+
 import tails_cloner.__main__ as package_entrypoint
 from tails_cloner import __version__, cli
 from tails_cloner.controller import ApplicationController
@@ -415,30 +417,43 @@ def test_experimental_discovery_unavailable_fails_closed(tmp_path: Path) -> None
     assert clone.clone_calls == []
 
 
-def test_upgrade_refuses_experimental_options_with_stable_category(tmp_path: Path) -> None:
+@pytest.mark.parametrize("arguments", [
+    ["--enable-post-write-customizations"],
+    ["--boot-order-entry", "Normal"],
+    ["--disable-post-write-sync"],
+    ["--post-write-settle-seconds", "2.0"],
+    ["--post-write-log-file", "audit.txt"],
+])
+def test_upgrade_refuses_experimental_options_with_stable_category(
+    tmp_path: Path, arguments: list[str],
+) -> None:
     image = tmp_path / "tails.img"
     image.write_bytes(b"synthetic image")
-    for arguments in (
-        ["--enable-post-write-customizations"],
-        ["--boot-order-entry", "Normal"],
-        ["--disable-post-write-sync"],
-        ["--post-write-settle-seconds", "2.0"],
-        ["--post-write-log-file", "audit.txt"],
-    ):
+    for command in (["upgrade"], ["plan", "upgrade"]):
         for before in (False, True):
             code, envelope, _ = run_json([
                 *(arguments if before else []),
-                "upgrade", "--image", str(image), "--target", "/dev/sdz",
+                *command, "--image", str(image), "--target", "/dev/sdz",
                 *([] if before else arguments),
             ])
             assert code == 3
             assert envelope["error"]["category"] == "post_write_upgrade_unsupported"
-        code, envelope, _ = run_json([
-            "plan", "upgrade", "--image", str(image), "--target", "/dev/sdz",
-            *arguments,
+
+
+def test_upgrade_rejection_preserves_jsonl_event_order_before_resolution() -> None:
+    stdout = StringIO()
+    with (
+        mock.patch("tails_cloner.cli._build_controller", side_effect=AssertionError("device access")),
+        redirect_stdout(stdout),
+    ):
+        code = cli.main([
+            "--disable-post-write-sync", "upgrade", "--image", "/nonexistent/tails.img",
+            "--target", "/dev/sdz", "--output", "jsonl",
         ])
-        assert code == 3
-        assert envelope["error"]["category"] == "post_write_upgrade_unsupported"
+    events = [json.loads(line) for line in stdout.getvalue().splitlines()]
+    assert code == 3
+    assert [event["kind"] for event in events] == ["start", "failure"]
+    assert events[-1]["error"]["category"] == "post_write_upgrade_unsupported"
 
 
 def test_invalid_post_write_settle_refused_before_device_access(tmp_path: Path) -> None:
