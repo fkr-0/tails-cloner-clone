@@ -2,8 +2,10 @@ import unittest
 from ssl import SSLCertVerificationError
 from unittest.mock import patch
 from urllib.error import URLError
+from urllib.request import Request
 
 from tails_cloner.remote_index import (
+    HttpsCatalogRedirectHandler,
     RemoteIndexError,
     RemoteVersionIndex,
     apply_latest_release_metadata,
@@ -40,6 +42,35 @@ class FakeJsonFetcher:
 
 
 class RemoteIndexTests(unittest.TestCase):
+    def test_catalog_redirect_rejects_https_downgrade(self) -> None:
+        with self.assertRaisesRegex(ValueError, "must use HTTPS"):
+            HttpsCatalogRedirectHandler().redirect_request(
+                Request("https://example.invalid/index"),
+                None,
+                302,
+                "Found",
+                {},
+                "http://example.invalid/leak",
+            )
+
+    def test_catalog_response_is_bounded(self) -> None:
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self, size: int) -> bytes:
+                return b"x" * size
+
+        with (
+            patch("tails_cloner.remote_index.should_use_torify", return_value=False),
+            patch("tails_cloner.remote_index.open_catalog_https", return_value=FakeResponse()),
+            self.assertRaisesRegex(ValueError, "too large"),
+        ):
+            fetch_text("https://example.invalid/catalog", 7)
+
     def test_fetch_text_uses_ssl_context_for_https(self) -> None:
         class FakeResponse:
             def __enter__(self):
@@ -48,12 +79,12 @@ class RemoteIndexTests(unittest.TestCase):
             def __exit__(self, exc_type, exc, tb):
                 return False
 
-            def read(self) -> bytes:
+            def read(self, _size: int = -1) -> bytes:
                 return b"ok"
 
         with (
             patch("tails_cloner.remote_index.should_use_torify", return_value=False),
-            patch("tails_cloner.remote_index.urlopen", return_value=FakeResponse()) as mock_urlopen,
+            patch("tails_cloner.remote_index.open_catalog_https", return_value=FakeResponse()) as mock_urlopen,
         ):
             text = fetch_text("https://example.invalid/catalog", 7)
 
@@ -65,7 +96,7 @@ class RemoteIndexTests(unittest.TestCase):
         with (
             patch("tails_cloner.remote_index.should_use_torify", return_value=False),
             patch(
-                "tails_cloner.remote_index.urlopen",
+                "tails_cloner.remote_index.open_catalog_https",
                 side_effect=SSLCertVerificationError("bad cert"),
             ) as mock_urlopen,
             self.assertRaises(SSLCertVerificationError),
@@ -78,7 +109,7 @@ class RemoteIndexTests(unittest.TestCase):
         with (
             patch("tails_cloner.remote_index.should_use_torify", return_value=False),
             patch(
-                "tails_cloner.remote_index.urlopen",
+                "tails_cloner.remote_index.open_catalog_https",
                 side_effect=URLError(SSLCertVerificationError("bad cert")),
             ) as mock_urlopen,
             self.assertRaises(URLError),

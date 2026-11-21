@@ -6,8 +6,9 @@ import ssl
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
+from typing import Any
 from urllib.parse import urljoin, urlparse
-from urllib.request import urlopen
+from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
 
 from tails_cloner.config import (
     DEFAULT_TAILS_LATEST_RELEASE_URL,
@@ -15,7 +16,7 @@ from tails_cloner.config import (
     VERSIONS_REFRESH_TIMEOUT_SECONDS,
 )
 from tails_cloner.models import VersionAssets
-from tails_cloner.network import fetch_text_torified, should_use_torify
+from tails_cloner.network import MAX_CATALOG_BYTES, fetch_text_torified, should_use_torify
 
 _VERSION_RE = re.compile(r"^\d+(?:\.\d+)+$")
 _HISTORY_DIR_RE = re.compile(r"^tails-amd64-(\d+(?:\.\d+)+)/?$")
@@ -67,6 +68,18 @@ def _require_https(url: str, *, purpose: str) -> None:
         raise ValueError(f"{purpose} URL must use HTTPS: {url}")
 
 
+class HttpsCatalogRedirectHandler(HTTPRedirectHandler):
+    """Reject plaintext HTTP redirects before the request is sent."""
+
+    def redirect_request(self, req: Request, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> Request | None:
+        _require_https(newurl, purpose="Remote catalog redirect")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def open_catalog_https(url: str, timeout: int, context: ssl.SSLContext) -> Any:
+    return build_opener(HttpsCatalogRedirectHandler(), HTTPSHandler(context=context)).open(url, timeout=timeout)
+
+
 def fetch_text(url: str, timeout_seconds: int) -> str:
     _require_https(url, purpose="Remote catalog")
     if should_use_torify():
@@ -81,10 +94,12 @@ def fetch_text(url: str, timeout_seconds: int) -> str:
         # The platform trust store remains active when certifi is unavailable.
         pass
 
-    with urlopen(url, timeout=timeout_seconds, context=ssl_context) as response:  # noqa: S310 - HTTPS enforced above
+    with open_catalog_https(url, timeout=timeout_seconds, context=ssl_context) as response:
         effective_url = str(response.geturl()) if hasattr(response, "geturl") else url
         _require_https(effective_url, purpose="Remote catalog redirect")
-        payload: bytes = response.read()
+        payload: bytes = response.read(MAX_CATALOG_BYTES + 1)
+    if len(payload) > MAX_CATALOG_BYTES:
+        raise ValueError("Remote catalog response is too large")
     return payload.decode("utf-8", errors="replace")
 
 

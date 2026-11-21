@@ -11,6 +11,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,6 +31,7 @@ from tails_cloner.verification import (
 MAX_CHECKSUM_BYTES = 256 * 1024
 MAX_SIGNATURE_BYTES = 1024 * 1024
 DOWNLOAD_CHUNK_BYTES = 1024 * 1024
+DOWNLOAD_TOTAL_TIMEOUT_SECONDS = 4 * 60 * 60
 
 
 class DownloadError(RuntimeError):
@@ -208,6 +210,10 @@ class VerifiedImageDownloader:
                         "=https",
                         "--proto-redir",
                         "=https",
+                        "--max-time",
+                        "30",
+                        "--noproxy",
+                        "*",
                         "--max-filesize",
                         str(MAX_SIGNATURE_BYTES),
                         "--output",
@@ -251,6 +257,10 @@ class VerifiedImageDownloader:
                         "=https",
                         "--proto-redir",
                         "=https",
+                        "--max-time",
+                        str(DOWNLOAD_TOTAL_TIMEOUT_SECONDS),
+                        "--noproxy",
+                        "*",
                         "--output",
                         str(destination),
                         url,
@@ -276,10 +286,15 @@ class VerifiedImageDownloader:
                 content_length = response.headers.get("Content-Length")
                 total = int(content_length) if content_length and content_length.isdigit() else None
                 received = 0
+                started = time.monotonic()
                 self._emit(callback, "download", "Downloading Tails IMG", bytes_received=0, bytes_total=total)
                 while chunk := response.read(DOWNLOAD_CHUNK_BYTES):
+                    if time.monotonic() - started > DOWNLOAD_TOTAL_TIMEOUT_SECONDS:
+                        raise TimeoutError("IMG download exceeded its total deadline")
                     output.write(chunk)
                     received += len(chunk)
+                    if total is not None and received > total:
+                        raise ValueError("IMG response exceeds declared Content-Length")
                     self._emit(
                         callback,
                         "download",
@@ -287,6 +302,8 @@ class VerifiedImageDownloader:
                         bytes_received=received,
                         bytes_total=total,
                     )
+                if total is not None and received != total:
+                    raise ValueError(f"IMG response truncated: expected {total} bytes, got {received}")
         except Exception as error:  # noqa: BLE001 - normalized at service boundary
             raise DownloadNetworkError(f"Could not download remote IMG: {error}") from error
 

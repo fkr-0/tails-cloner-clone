@@ -259,3 +259,31 @@ def test_fetch_checksum_text_uses_tor_when_requested() -> None:
     with mock.patch("tails_cloner.download.fetch_text_torified", return_value="abc") as torified:
         assert fetch_checksum_text("https://example.invalid/x.sha256", use_torify=True) == "abc"
     torified.assert_called_once_with("https://example.invalid/x.sha256", 30)
+
+
+def test_image_rejects_truncated_content_length(tmp_path: Path) -> None:
+    downloader = VerifiedImageDownloader(use_torify=lambda: False)
+
+    class Response:
+        headers = {"Content-Length": "9"}
+
+        def __enter__(self) -> "Response":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def geturl(self) -> str:
+            return "https://example.invalid/image.img"
+
+        def read(self, _size: int) -> bytes:
+            if getattr(self, "read_once", False):
+                return b""
+            self.read_once = True
+            return b"abc"
+
+    with (
+        mock.patch("tails_cloner.download.open_https", return_value=Response()),
+        pytest.raises(DownloadNetworkError, match="truncated"),
+    ):
+        downloader._download_image("https://example.invalid/image.img", tmp_path / "partial", None)
