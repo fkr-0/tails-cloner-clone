@@ -340,7 +340,7 @@ def test_partition_copy_streams_dd_progress_with_production_runner(monkeypatch: 
 
     seen: list[list[str]] = []
 
-    def fake_stream(command: list[str], callback) -> int:  # type: ignore[no-untyped-def]
+    def fake_stream(command: list[str], callback) -> int:
         seen.append(command)
         callback("1048576 bytes (1.0 MB, 1.0 MiB) copied, 1 s, 1.0 MB/s")
         return 0
@@ -363,7 +363,7 @@ def test_partition_copy_streams_dd_progress_with_production_runner(monkeypatch: 
 def test_partition_copy_failure_reports_dd_stderr_tail(monkeypatch: pytest.MonkeyPatch) -> None:
     from tails_cloner import upgrader
 
-    def fake_stream(_command: list[str], callback) -> int:  # type: ignore[no-untyped-def]
+    def fake_stream(_command: list[str], callback) -> int:
         callback("dd: error writing '/dev/sdb2': No space left on device")
         return 1
 

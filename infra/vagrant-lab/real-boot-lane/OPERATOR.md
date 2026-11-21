@@ -112,3 +112,47 @@ real-boot-validate-local
 ```
 
 This checks shell syntax, compiles all real-boot lane Python scripts, and runs the focused E2E tests without starting QEMU/Tails.
+
+## Boot-order verification (experimental, separate lane)
+
+A successful file rewrite is not evidence that Tails boots or that its menu order
+changed on screen. Verify each layer independently.
+
+### Offline directory-copy evidence
+
+Run the command on a synthetic fixture directory containing grub.cfg or
+syslinux.cfg. Do not point it at a mounted block device.
+
+```bash
+python3 infra/vagrant-lab/real-boot-lane/boot_order_evidence.py --source-dir /path/to/fixture --entry "Second" --entry "First" --dry-run
+```
+
+Only after reviewing the dry-run, run the disposable-copy validation:
+
+```bash
+TAILS_CLONER_LAB_ALLOW_DESTRUCTIVE=1 python3 infra/vagrant-lab/real-boot-lane/boot_order_evidence.py --source-dir /path/to/fixture --entry "Second" --entry "First" --evidence infra/vagrant-lab/real-boot-lane/out/boot-order/boot-order-offline-evidence.json
+```
+
+The tool applies the production rewrite to a temporary copy, verifies that
+the original and unrelated bytes remain unchanged, and records before/after
+hashes and parsed entries. It does not modify the input directory.
+
+### Human-run QEMU layer (not yet qualified)
+
+1. Check available disk space, active/stale qemu-system-x86_64 and
+   run_appimage_smoke_via_serial_login.py processes; allow only one VM.
+2. Preserve `out/debug-boot/tails-amd64-7.7.2-boot-8g-debug-serial.img`.
+   Use a distinct disposable copy for the boot-order experiment.
+3. Use an unprivileged FAT image tool or isolated lab VM to inject only the
+   validated boot config into the disposable image; never mount real devices.
+4. Run `probe_tails_boot_screen.py --dry-run` before a bounded live probe;
+   store baseline and modified QMP screenshots plus
+   `boot-screen-probe-evidence.json` under
+   `infra/vagrant-lab/real-boot-lane/out/boot-order/qemu/`.
+5. Review the actual visible titles and their positions. Whole-frame hashes
+   alone cannot prove menu ordering: timing, cursor, and boot-stage differences
+   can change pixels without changing the menu order.
+
+Neither dry-run success, offline copy success nor QMP capture alone proves
+real-device boot compatibility. Record these layers as `not_verified`
+until independent evidence exists.

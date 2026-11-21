@@ -13,7 +13,6 @@ from typing import Literal
 from urllib.parse import urlparse
 
 from tails_cloner.blockdev import parse_dd_bytes
-from tails_cloner.boot_loader import discover_boot_loader_entries
 from tails_cloner.cli_events import CliError, CommandResult, EventSink, ExitCode
 from tails_cloner.config import (
     BRANDING,
@@ -35,6 +34,7 @@ from tails_cloner.download import (
     gpg_available,
     require_https_url,
 )
+from tails_cloner.image_probe import discover_boot_loader_entries
 from tails_cloner.models import SourceMode
 from tails_cloner.network import should_use_torify
 from tails_cloner.planner import OperationKind, OperationPlan
@@ -107,6 +107,7 @@ class TailsClonerApp(tk.Tk):
         self.dark_mode_var = tk.BooleanVar(value=True)
         self._last_versions_refresh_at: str = "never"
         self._checksum_job_id = 0
+        self._boot_parse_job_id = 0
         self._ui_events: SimpleQueue[Callable[[], None]] = SimpleQueue()
         self._write_in_progress = False
         self._write_total_bytes = 0
@@ -120,6 +121,7 @@ class TailsClonerApp(tk.Tk):
         # Re-apply native-widget colors now that Canvas/Text widgets exist.
         self._configure_theme()
         self.image_path_var.trace_add("write", lambda *_: self._schedule_local_checksum_refresh())
+        self.image_path_var.trace_add("write", lambda *_: self._reset_boot_order_entries())
         self.controller.startup()
         self._emit_resolution(
             resource="gui_state",
@@ -531,6 +533,12 @@ class TailsClonerApp(tk.Tk):
             command=self._sync_experimental_state,
         )
         self.experimental_toggle.grid(row=0, column=0, sticky="w")
+        self._autowrap(ttk.Label(
+            exp_panel,
+            text="Install only. Experimental: modifies boot configuration on the newly written device, "
+                 "keeps a backup, and may leave it unbootable. Not verified on real hardware.",
+            style="Warning.TLabel", justify="left",
+        )).grid(row=2, column=0, sticky="ew", pady=(4, 0))
 
         self.experimental_notebook = ttk.Notebook(exp_panel)
         self.experimental_notebook.grid(row=1, column=0, sticky="ew", pady=(8, 0))
@@ -550,20 +558,22 @@ class TailsClonerApp(tk.Tk):
         ).grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 6))
         self.boot_order_list = tk.Listbox(self.boot_order_tab, height=5, exportselection=False, activestyle="none")
         self.boot_order_list.grid(row=1, column=0, sticky="nsew")
+        self.boot_order_list.bind("<Alt-Up>", lambda _event: self._keyboard_move_boot_entry(-1))
+        self.boot_order_list.bind("<Alt-Down>", lambda _event: self._keyboard_move_boot_entry(1))
         boot_buttons = ttk.Frame(self.boot_order_tab)
         boot_buttons.grid(row=1, column=1, sticky="ns", padx=(8, 0))
-        self.boot_order_up_button = ttk.Button(boot_buttons, text="↑", width=3, command=lambda: self._move_boot_order_entry(-1))
+        self.boot_order_up_button = ttk.Button(boot_buttons, text="Move up (Alt+Up)", command=lambda: self._move_boot_order_entry(-1))
         self.boot_order_up_button.grid(row=0, column=0, sticky="ew", pady=(0, 4))
-        self.boot_order_down_button = ttk.Button(boot_buttons, text="↓", width=3, command=lambda: self._move_boot_order_entry(1))
+        self.boot_order_down_button = ttk.Button(boot_buttons, text="Move down (Alt+Down)", command=lambda: self._move_boot_order_entry(1))
         self.boot_order_down_button.grid(row=1, column=0, sticky="ew", pady=(0, 4))
-        self.boot_order_remove_button = ttk.Button(boot_buttons, text="−", width=3, command=self._remove_boot_order_entry)
+        self.boot_order_remove_button = ttk.Button(boot_buttons, text="Remove entry", command=self._remove_boot_order_entry)
         self.boot_order_remove_button.grid(row=2, column=0, sticky="ew", pady=(0, 4))
         add_row = ttk.Frame(self.boot_order_tab)
         add_row.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         add_row.columnconfigure(0, weight=1)
         self.boot_order_entry = ttk.Entry(add_row, textvariable=self.boot_loader_entry_var)
         self.boot_order_entry.grid(row=0, column=0, sticky="ew")
-        self.boot_order_add_button = ttk.Button(add_row, text="+", width=3, command=self._add_boot_order_entry)
+        self.boot_order_add_button = ttk.Button(add_row, text="Add entry", command=self._add_boot_order_entry)
         self.boot_order_add_button.grid(row=0, column=1, padx=(8, 0))
         self.boot_order_parse_button = ttk.Button(
             self.boot_order_tab,
@@ -905,7 +915,12 @@ class TailsClonerApp(tk.Tk):
             self.tab2_source_var.set(f"Source: {self.image_path_var.get().strip() or 'not selected'}")
 
     def _sync_experimental_state(self) -> None:
-        enabled = self.experimental_enabled_var.get()
+        enabled = self.experimental_enabled_var.get() and not self._upgrade_mode_enabled()
+        if not enabled:
+            self._reset_boot_order_entries()
+            if self._upgrade_mode_enabled():
+                self.boot_loader_status_var.set("Unavailable for upgrades; boot-order customization is install-only.")
+        self.experimental_toggle.configure(state="disabled" if self._upgrade_mode_enabled() else "normal")
         state = "normal" if enabled else "disabled"
         notebook = self.__dict__.get("experimental_notebook")
         if notebook is not None:
@@ -945,9 +960,23 @@ class TailsClonerApp(tk.Tk):
 
     def _sync_post_write_options(self) -> None:
         options = self.controller.state.post_write_options
-        options.enabled = self.experimental_enabled_var.get()
-        options.boot_loader_order.enabled = self.experimental_enabled_var.get()
-        options.boot_loader_order.entries = self._boot_order_entries() if self.experimental_enabled_var.get() else []
+        enabled = self.experimental_enabled_var.get() and not self._upgrade_mode_enabled()
+        options.enabled = enabled
+        options.boot_loader_order.enabled = enabled
+        options.boot_loader_order.entries = self._boot_order_entries() if enabled else []
+        if "clone_button" in self.__dict__:
+            self._sync_upgrade_plan()
+
+    def _reset_boot_order_entries(self) -> None:
+        self._boot_parse_job_id = self.__dict__.get("_boot_parse_job_id", 0) + 1
+        self.boot_order_list.delete(0, tk.END)
+        self.boot_loader_entry_var.set("")
+        self.boot_loader_status_var.set("No entries loaded. Parse the selected image to begin.")
+        self._sync_post_write_options()
+
+    def _keyboard_move_boot_entry(self, direction: int) -> str:
+        self._move_boot_order_entry(direction)
+        return "break"
 
     def _selected_boot_order_index(self) -> int | None:
         selection = self.boot_order_list.curselection()  # type: ignore[no-untyped-call]
@@ -990,24 +1019,42 @@ class TailsClonerApp(tk.Tk):
         self._sync_post_write_options()
 
     def _start_parse_boot_order_entries(self) -> None:
+        if not self.experimental_enabled_var.get() or self._upgrade_mode_enabled():
+            return
         source_path = self.image_path_var.get().strip()
         if self.controller.state.source_mode == SourceMode.RUNNING:
             source_path = self.controller.state.running_tails_device
         if not source_path:
             self.boot_loader_status_var.set("No image/source selected to parse.")
             return
-        self.controller.executor.submit(self._parse_boot_order_entries_task, source_path)
+        self._boot_parse_job_id += 1
+        job_id = self._boot_parse_job_id
+        self.boot_loader_status_var.set("Reading boot-loader entries…")
+        self.controller.executor.submit(self._parse_boot_order_entries_task, job_id, source_path)
 
-    def _parse_boot_order_entries_task(self, source_path: str) -> None:
-        entries = discover_boot_loader_entries(source_path)
-        if not entries:
-            self._queue_ui(lambda: self.boot_loader_status_var.set("No boot-loader entries found in selected source."))
+    def _parse_boot_order_entries_task(self, job_id: int, source_path: str) -> None:
+        try:
+            entries = discover_boot_loader_entries(source_path)
+        except Exception as error:  # noqa: BLE001 - surface malformed/unreadable sources
+            self._queue_ui(partial(self._apply_boot_parse_failure, job_id, source_path, str(error)))
             return
-        self._queue_ui(partial(self._apply_parsed_boot_order_entries, entries))
+        self._queue_ui(partial(self._apply_parsed_boot_order_entries, job_id, source_path, entries))
 
-    def _apply_parsed_boot_order_entries(self, entries: list[str]) -> None:
+    def _boot_parse_is_current(self, job_id: int, source_path: str) -> bool:
+        current_path = (self.controller.state.running_tails_device if self.controller.state.source_mode == SourceMode.RUNNING
+                        else self.image_path_var.get().strip())
+        return (job_id == self._boot_parse_job_id and source_path == current_path
+                and self.experimental_enabled_var.get() and not self._upgrade_mode_enabled())
+
+    def _apply_boot_parse_failure(self, job_id: int, source_path: str, reason: str) -> None:
+        if self._boot_parse_is_current(job_id, source_path):
+            self.boot_loader_status_var.set(f"Cannot read boot entries: {reason}")
+
+    def _apply_parsed_boot_order_entries(self, job_id: int, source_path: str, entries: list[str]) -> None:
+        if not self._boot_parse_is_current(job_id, source_path):
+            return
         self._set_boot_order_entries(entries)
-        self.boot_loader_status_var.set(f"Parsed {len(entries)} boot-loader entr{'y' if len(entries) == 1 else 'ies'}.")
+        self.boot_loader_status_var.set(f"Parsed {len(entries)} boot-loader entries." if entries else "No boot-loader entries found in selected source.")
 
     def _install_warning_text(self) -> str:
         return (
@@ -1027,6 +1074,8 @@ class TailsClonerApp(tk.Tk):
         return self.action_mode_var.get() in {"upgrade", "update"}
 
     def _on_action_mode_changed(self) -> None:
+        if "experimental_enabled_var" in self.__dict__:
+            self._sync_experimental_state()
         if self._upgrade_mode_enabled():
             self.install_warning_label.config(text=self._upgrade_warning_text(), style="Success.TLabel")
             if "clone_button" in self.__dict__:
@@ -1117,6 +1166,7 @@ class TailsClonerApp(tk.Tk):
 
     def _on_source_mode_changed(self) -> None:
         """Handle source mode radio button change."""
+        self._reset_boot_order_entries()
         mode_str = self.source_mode_var.get()
         if mode_str == "running":
             self.controller.set_source_mode(SourceMode.RUNNING)
@@ -1364,10 +1414,20 @@ class TailsClonerApp(tk.Tk):
             self._update_device_warnings_and_button()
             return
 
+        confirmation_message = plan.confirmation_message
+        if self.experimental_enabled_var.get() and not self._upgrade_mode_enabled():
+            self._sync_post_write_options()
+            chosen_order = self._boot_order_entries()
+            confirmation_message += (
+                "\n\nEXPERIMENTAL boot-order rewrite: changes the boot configuration on the "
+                "newly written device and keeps a backup. It may leave the device unbootable."
+                "\nResolved boot-entry order: " + (" → ".join(chosen_order) if chosen_order else "(none selected)")
+            )
+
         # Default to "No": a stray Enter/Space on a destructive prompt must never confirm it.
         confirmed = messagebox.askyesno(
             plan.confirmation_title,
-            plan.confirmation_message,
+            confirmation_message,
             icon=messagebox.WARNING,
             default=messagebox.NO,
         )
@@ -1750,7 +1810,12 @@ class TailsClonerApp(tk.Tk):
         else:
             action_desc = "Install; deletes all data on the target"
 
-        self.upgrade_plan_var.set(f"Source: {source_desc}\nTarget: {target_device}\nAction: {action_desc}")
+        summary = f"Source: {source_desc}\nTarget: {target_device}\nAction: {action_desc}"
+        if ("experimental_enabled_var" in self.__dict__ and self.experimental_enabled_var.get()
+                and not self._upgrade_mode_enabled()):
+            order = self._boot_order_entries()
+            summary += "\nExperimental boot order: " + (" → ".join(order) if order else "no entries selected")
+        self.upgrade_plan_var.set(summary)
 
     def _on_close(self) -> None:
         if self._write_in_progress:

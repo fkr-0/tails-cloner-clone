@@ -336,6 +336,171 @@ def test_plan_upgrade_reports_partition_only_persistence_preservation(tmp_path: 
     assert plan["persistence_behavior"] == "preserved_if_present"
 
 
+def test_experimental_plan_previews_resolved_order_without_writing(tmp_path: Path) -> None:
+    image = tmp_path / "tails.img"
+    image.write_bytes(b"menuentry 'Normal' {\n}\nmenuentry 'Troubleshooting' {\n}\n")
+    controller, clone = make_controller([target_device()])
+    with (
+        mock.patch("tails_cloner.cli._build_controller", return_value=controller),
+        mock.patch("tails_cloner.cli.discover_boot_loader_entries", return_value=["Normal", "Troubleshooting"]),
+    ):
+        code, envelope, _ = run_json([
+            "plan", "install", "--image", str(image), "--target", "/dev/sdz",
+            "--enable-post-write-customizations", "--boot-order-entry", "Troubleshooting",
+        ])
+    assert code == 0
+    preview = envelope["result"]["plan"]["post_write_preview"]
+    assert preview["experimental"] is True
+    assert preview["resolved_order"] == ["Troubleshooting", "Normal"]
+    assert preview["ignored_entries"] == ["Normal"]
+    assert clone.clone_calls == []
+
+
+def test_experimental_plan_emits_warning_before_resolution_in_jsonl(tmp_path: Path) -> None:
+    image = tmp_path / "tails.img"
+    image.write_bytes(b"synthetic image")
+    controller, _ = make_controller([target_device()])
+    stdout = StringIO()
+    with (
+        mock.patch("tails_cloner.cli._build_controller", return_value=controller),
+        redirect_stdout(stdout),
+    ):
+        code = cli.main([
+            "plan", "install", "--image", str(image), "--target", "/dev/sdz",
+            "--enable-post-write-customizations", "--output", "jsonl",
+        ])
+    events = [json.loads(line) for line in stdout.getvalue().splitlines()]
+    assert code == 0
+    assert events[1]["kind"] == "warning"
+    assert events[1]["category"] == "experimental_post_write"
+    assert events[-1]["kind"] == "completion"
+
+
+def test_experimental_order_refuses_invalid_entries_before_write(tmp_path: Path) -> None:
+    image = tmp_path / "tails.img"
+    image.write_bytes(b"menuentry 'Normal' {\n}\n")
+    for entries, category in [
+        (["Missing"], "boot_order_entry_unknown"),
+        (["Normal", "Normal"], "boot_order_entry_duplicate"),
+        (["  "], "boot_order_entry_empty"),
+    ]:
+        controller, clone = make_controller([target_device()])
+        with (
+            mock.patch("tails_cloner.cli._build_controller", return_value=controller),
+            mock.patch("tails_cloner.cli.discover_boot_loader_entries", return_value=["Normal"]),
+        ):
+            code, envelope, _ = run_json([
+                "install", "--image", str(image), "--allow-unverified-local-image",
+                "--target", "/dev/sdz", "--yes", "--target-id", "serial:target123",
+                "--enable-post-write-customizations",
+                *(flag for entry in entries for flag in ("--boot-order-entry", entry)),
+            ])
+        assert code == 3
+        assert envelope["error"]["category"] == category
+        assert clone.clone_calls == []
+
+
+def test_experimental_discovery_unavailable_fails_closed(tmp_path: Path) -> None:
+    image = tmp_path / "tails.img"
+    image.write_bytes(b"not a supported image")
+    controller, clone = make_controller([target_device()])
+    with mock.patch("tails_cloner.cli._build_controller", return_value=controller):
+        code, envelope, _ = run_json([
+            "install", "--image", str(image), "--allow-unverified-local-image",
+            "--target", "/dev/sdz", "--enable-post-write-customizations",
+            "--boot-order-entry", "Normal", "--yes", "--target-id", "serial:target123",
+        ])
+    assert code == 3
+    assert envelope["error"]["category"] == "boot_order_discovery_unavailable"
+    assert clone.clone_calls == []
+
+
+def test_upgrade_refuses_experimental_options_with_stable_category(tmp_path: Path) -> None:
+    image = tmp_path / "tails.img"
+    image.write_bytes(b"synthetic image")
+    for arguments in (
+        ["--enable-post-write-customizations"],
+        ["--boot-order-entry", "Normal"],
+        ["--disable-post-write-sync"],
+        ["--post-write-settle-seconds", "2.0"],
+        ["--post-write-log-file", "audit.txt"],
+    ):
+        for before in (False, True):
+            code, envelope, _ = run_json([
+                *(arguments if before else []),
+                "upgrade", "--image", str(image), "--target", "/dev/sdz",
+                *([] if before else arguments),
+            ])
+            assert code == 3
+            assert envelope["error"]["category"] == "post_write_upgrade_unsupported"
+        code, envelope, _ = run_json([
+            "plan", "upgrade", "--image", str(image), "--target", "/dev/sdz",
+            *arguments,
+        ])
+        assert code == 3
+        assert envelope["error"]["category"] == "post_write_upgrade_unsupported"
+
+
+def test_invalid_post_write_settle_refused_before_device_access(tmp_path: Path) -> None:
+    image = tmp_path / "tails.img"
+    image.write_bytes(b"synthetic image")
+    for invalid in ("nan", "inf", "-inf", "-1", "61"):
+        code, envelope, _ = run_json([
+            "install", "--image", str(image), "--target", "/dev/sdz",
+            "--enable-post-write-customizations", f"--post-write-settle-seconds={invalid}",
+        ])
+        assert code == 3
+        assert envelope["error"]["category"] == "post_write_settle_invalid"
+
+
+def test_post_write_failure_has_distinct_exit_after_image_write(tmp_path: Path) -> None:
+    from tails_cloner.post_write import MountState, PostWriteFailure
+
+    class FailedCustomization(FakeCloneService):
+        def clone_image(
+            self, image_path: str, device_path: str,
+            progress_callback: Callable[[str], None] | None = None,
+            post_write_options: PostWriteOptions | None = None,
+        ) -> None:
+            _ = (image_path, device_path, post_write_options)
+            if progress_callback:
+                progress_callback("Applying experimental boot-loader order on /dev/example...")
+            raise PostWriteFailure("simulated", MountState(device_state="unmounted"))
+
+    image = tmp_path / "tails.img"
+    image.write_bytes(b"synthetic image")
+    controller, _ = make_controller([target_device()], clone_service=FailedCustomization())
+    with mock.patch("tails_cloner.cli._build_controller", return_value=controller):
+        code, envelope, _ = run_json([
+            "install", "--image", str(image), "--allow-unverified-local-image",
+            "--target", "/dev/sdz", "--yes", "--target-id", "serial:target123",
+            "--enable-post-write-customizations",
+        ])
+    assert code == 10
+    assert envelope["error"]["category"] == "post_write_failed_after_write"
+    assert envelope["error"]["details"]["image_written"] is True
+
+
+def test_post_write_progress_is_translated_into_structured_file_events() -> None:
+    from tails_cloner.cli_events import EventSink, OutputMode
+
+    stdout = StringIO()
+    sink = EventSink(command="install", output_mode=OutputMode.JSONL, stdout=stdout, stderr=StringIO())
+    relay = cli._progress_callback(sink)
+    for message in (
+        "Running optional post-write customizations for /dev/example...",
+        "Reordered EFI/grub.cfg; backup: EFI/grub.cfg.bak",
+        "Skipped syslinux.cfg: duplicate titles",
+        "No boot-loader order change needed for live.cfg.",
+        "Optional post-write customizations completed.",
+    ):
+        relay(message)
+    steps = [json.loads(line) for line in stdout.getvalue().splitlines() if '"kind":"post_write_step"' in line]
+    assert [step["status"] for step in steps] == ["start", "changed", "skipped", "no_change", "complete"]
+    assert steps[1]["file"] == "EFI/grub.cfg"
+    assert steps[2]["reason"] == "duplicate titles"
+
+
 def test_plan_current_system_target_returns_safety_exit(tmp_path: Path) -> None:
     image = tmp_path / "tails.img"
     image.write_bytes(b"synthetic image")

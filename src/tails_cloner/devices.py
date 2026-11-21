@@ -15,6 +15,12 @@ from tails_cloner.blockdev import (
 )
 from tails_cloner.drive_inspector import has_tails_installation
 from tails_cloner.models import BlockDevice
+from tails_cloner.source import (
+    get_parent_disk_path,
+    get_running_tails_device,
+    has_running_tails_boot_signals,
+    is_running_tails,
+)
 
 LSBLK_COLUMNS = (
     "NAME,PATH,PKNAME,SIZE,MODEL,VENDOR,SERIAL,WWN,MAJ:MIN,RM,HOTPLUG,TRAN,TYPE,RO,"
@@ -99,8 +105,12 @@ def _find_running_root_source(run: RunCommand) -> str:
     return _normalize_root_source(result.stdout)
 
 
-def parse_lsblk_json(payload: dict[str, Any], *, running_root_source: str = "") -> list[BlockDevice]:
+def parse_lsblk_json(
+    payload: dict[str, Any], *, running_root_source: str = "",
+    running_live_source: str = "", live_source_ambiguous: bool = False,
+) -> list[BlockDevice]:
     normalized_root_source = _normalize_root_source(running_root_source)
+    live_parent = get_parent_disk_path(running_live_source) if running_live_source else ""
     devices: list[BlockDevice] = []
     for raw_item in payload.get("blockdevices", []):
         if not isinstance(raw_item, dict):
@@ -133,6 +143,9 @@ def parse_lsblk_json(payload: dict[str, Any], *, running_root_source: str = "") 
             is_current_system_device = is_current_system_device or any(
                 str(node.get("path") or "") == normalized_root_source for node in system_nodes
             )
+        if live_source_ambiguous or (live_parent and get_parent_disk_path(path) == live_parent):
+            is_current_system_device = True
+            is_host_system_device = True
 
         # Detect Tails installation
         has_tails = has_tails_installation(item, partitions)
@@ -197,7 +210,30 @@ class DeviceService:
         payload = json.loads(result.stdout)
         if not isinstance(payload, dict):
             raise RuntimeError("lsblk returned a non-object JSON payload")
-        devices = parse_lsblk_json(payload, running_root_source=running_root_source)
+        live_source = ""
+        live_source_ambiguous = False
+        mount_recognized = is_running_tails()
+        boot_recognized = has_running_tails_boot_signals()
+        if mount_recognized:
+            live_source = get_running_tails_device() or ""
+            # A live root can be overlay/loop/mapper-backed. Without reliable
+            # physical ancestry, never offer a disk as a write target.
+            live_source_ambiguous = not live_source or get_parent_disk_path(live_source).startswith(
+                ("/dev/loop", "/dev/mapper", "/dev/dm-", "/dev/md")
+            )
+        if boot_recognized and not mount_recognized:
+            live_source_ambiguous = True
+        if mount_recognized and live_source and not any(
+            get_parent_disk_path(str(item.get("path") or "")) == get_parent_disk_path(live_source)
+            for item in payload.get("blockdevices", []) if isinstance(item, dict) and item.get("type") == "disk"
+        ):
+            # The boot USB may have been removed/re-enumerated. Its original
+            # name must never make a different newly inserted disk writable.
+            live_source_ambiguous = True
+        devices = parse_lsblk_json(
+            payload, running_root_source=running_root_source,
+            running_live_source=live_source, live_source_ambiguous=live_source_ambiguous,
+        )
         for device in devices:
             device.stable_path = find_stable_device_path(device.path)
         return devices

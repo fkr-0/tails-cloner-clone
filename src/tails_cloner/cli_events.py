@@ -25,6 +25,7 @@ class ExitCode(IntEnum):
     INSTALL_FAILED = 7
     UPGRADE_FAILED = 8
     INTERNAL_ERROR = 9
+    POST_WRITE_FAILED = 10
 
 
 class OutputMode(StrEnum):
@@ -107,6 +108,7 @@ class EventSink:
                 "progress",
                 "verification",
                 "write_boundary",
+                "post_write_step",
             }:
                 message = event.get("message")
                 if isinstance(message, str) and message:
@@ -133,6 +135,9 @@ class EventSink:
 
     def write_boundary(self, message: str, **fields: object) -> None:
         self.emit("write_boundary", message=message, **fields)
+
+    def post_write_step(self, status: str, message: str, **fields: object) -> None:
+        self.emit("post_write_step", status=status, message=message, **fields)
 
     def complete(self, result: CommandResult) -> None:
         event = self.emit("completion", exit_code=int(result.exit_code), result=result.payload)

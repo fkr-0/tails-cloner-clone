@@ -9,11 +9,25 @@ from tails_cloner.source import (
     SourceType,
     get_parent_disk_path,
     get_running_tails_version,
+    has_running_tails_boot_signals,
     is_running_tails,
 )
 
 
 class RunningTailsDetectionTests(unittest.TestCase):
+    def test_live_boot_and_tails_product_are_both_required_as_protection_hint(self) -> None:
+        def fake_read(path, **_kwargs):
+            return "quiet boot=live splash" if str(path) == "/proc/cmdline" else 'ID=tails\nNAME="Tails"'
+
+        with patch("pathlib.Path.read_text", autospec=True, side_effect=fake_read):
+            self.assertTrue(has_running_tails_boot_signals())
+
+        def foreign_os(path, **_kwargs):
+            return "quiet boot=live" if str(path) == "/proc/cmdline" else 'ID=debian\nNAME="Debian"'
+
+        with patch("pathlib.Path.read_text", autospec=True, side_effect=foreign_os):
+            self.assertFalse(has_running_tails_boot_signals())
+
     def test_not_running_tails_when_mount_missing(self) -> None:
         """When Tails mount point doesn't exist, we're not running Tails."""
         with patch("os.path.exists", return_value=False):
@@ -62,6 +76,17 @@ class RunningTailsVersionTests(unittest.TestCase):
 
 
 class ParentDiskPathTests(unittest.TestCase):
+    def test_alias_paths_resolve_before_parent_partition_extraction(self) -> None:
+        with patch("tails_cloner.source.os.path.realpath", side_effect=lambda path: {
+            "/dev/disk/by-id/usb-live-part1": "/dev/sdb1",
+            "/dev/disk/by-uuid/tails": "/dev/sdb1",
+        }.get(path, path)):
+            self.assertEqual(get_parent_disk_path("/dev/disk/by-id/usb-live-part1"), "/dev/sdb")
+            self.assertEqual(get_parent_disk_path("/dev/disk/by-uuid/tails"), "/dev/sdb")
+
+    def test_dm_mapper_path_is_not_guessed_as_a_disk(self) -> None:
+        self.assertEqual(get_parent_disk_path("/dev/mapper/TailsData_unlocked"), "/dev/mapper/TailsData_unlocked")
+
     def test_get_parent_disk_for_standard_partition(self) -> None:
         self.assertEqual(get_parent_disk_path("/dev/sdb1"), "/dev/sdb")
 
@@ -76,6 +101,14 @@ class ParentDiskPathTests(unittest.TestCase):
 
 
 class AttachedLiveSystemSourceTests(unittest.TestCase):
+    def test_source_target_alias_is_rejected(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            source = AttachedLiveSystemSource(device_path="/dev/sdb1", mount_point=Path(tmpdir))
+            with patch("tails_cloner.source.os.path.realpath", side_effect=lambda path: {
+                "/dev/disk/by-id/usb-live": "/dev/sdb",
+            }.get(path, path)):
+                self.assertTrue(source.target_is_source_device("/dev/disk/by-id/usb-live"))
+
     def test_validate_succeeds_for_mounted_tails_like_live_medium(self) -> None:
         with TemporaryDirectory() as tmpdir:
             mount_point = Path(tmpdir)

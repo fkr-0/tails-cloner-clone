@@ -211,7 +211,7 @@ The existing optional customization hook is available without changing its defau
 --boot-order-entry ENTRY          # repeatable; experimental existing feature
 ```
 
-`--post-write-log-file` is the legacy/customization hook log. It is separate from the stable CLI event `--log-file` described below. Boot-loader ordering remains experimental and is not exposed for upgrades.
+`--post-write-log-file` is the legacy/customization hook log. It is separate from the stable CLI event `--log-file` described below. Boot-loader ordering remains experimental and is not exposed for upgrades. Ambiguous configurations (including duplicate titles, incomplete or overlapping GRUB blocks, dynamic or scoped GRUB entries, Syslinux global directives inside label blocks, and unsupported encodings) are skipped with a reason and left unchanged. Supported rewrites preserve comments between GRUB entries and retain a backup; these checks do not establish real-device boot compatibility.
 
 ## Execute a persistence-preserving upgrade
 

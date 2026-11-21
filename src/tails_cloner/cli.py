@@ -17,6 +17,7 @@ from typing import cast
 
 from tails_cloner import __version__
 from tails_cloner.blockdev import parse_dd_bytes
+from tails_cloner.boot_loader import reorder_entries
 from tails_cloner.cli_events import (
     CliError,
     CommandResult,
@@ -37,6 +38,7 @@ from tails_cloner.download import (
     default_destination_for_url,
 )
 from tails_cloner.drive_inspector import inspect_drive_tails_facts
+from tails_cloner.image_probe import DiscoveryError, discover_boot_loader_entries
 from tails_cloner.models import (
     BlockDevice,
     BootLoaderOrderOptions,
@@ -45,6 +47,7 @@ from tails_cloner.models import (
     VersionAssets,
 )
 from tails_cloner.planner import OperationKind, target_confirmation_token
+from tails_cloner.post_write import PostWriteFailure
 from tails_cloner.runtime import build_application_controller
 from tails_cloner.source import (
     AttachedLiveSystemSource,
@@ -60,6 +63,57 @@ def _build_controller(remote_index_url: str, post_write_options: PostWriteOption
     return build_application_controller(
         remote_index_url=remote_index_url,
         post_write_options=post_write_options,
+    )
+
+
+def _post_write_preview(options: PostWriteOptions, image_path: str | None) -> dict[str, object]:
+    requested = options.boot_loader_order.entries
+    available: list[str] = []
+    if requested:
+        if image_path is None:
+            raise CliError(
+                "Boot-order preview requires a local image; catalog/live sources cannot be inspected read-only here.",
+                exit_code=ExitCode.INVALID_INPUT,
+                category="boot_order_source_unavailable",
+            )
+        try:
+            available = discover_boot_loader_entries(image_path)
+        except DiscoveryError as error:
+            raise CliError(
+                f"Boot-entry discovery failed safely: {error}",
+                exit_code=ExitCode.INVALID_INPUT,
+                category="boot_order_discovery_unavailable",
+            ) from error
+        if not available:
+            raise CliError(
+                "No boot entries could be discovered; refusing an unverified reordering.",
+                exit_code=ExitCode.INVALID_INPUT,
+                category="boot_order_discovery_empty",
+            )
+        unknown = [entry for entry in requested if entry not in available]
+        if unknown:
+            raise CliError(
+                "Unknown boot-order entries: " + ", ".join(unknown),
+                exit_code=ExitCode.INVALID_INPUT,
+                category="boot_order_entry_unknown",
+                details={"unknown_entries": unknown, "available_entries": available},
+            )
+    resolved = reorder_entries(available, requested)
+    return {
+        "enabled": options.enabled,
+        "experimental": True,
+        "requested_order": requested,
+        "available_entries": available,
+        "resolved_order": resolved,
+        "ignored_entries": [entry for entry in available if entry not in requested],
+        "discovery_verified": bool(available),
+    }
+
+
+def _warn_experimental(sink: EventSink) -> None:
+    sink.warning(
+        "Experimental post-write boot configuration is not verified for real-device boot compatibility.",
+        category="experimental_post_write",
     )
 
 
@@ -630,12 +684,33 @@ def _blocked_plan_exit(plan: dict[str, object]) -> ExitCode:
     return ExitCode.INVALID_INPUT
 
 
+def _reject_upgrade_post_write_options(args: argparse.Namespace) -> None:
+    """Reject every install-only flag, including explicit default-valued flags."""
+    if any((
+        getattr(args, "enable_post_write_customizations", False),
+        getattr(args, "boot_order_entry", []),
+        getattr(args, "disable_post_write_sync", False),
+        getattr(args, "post_write_settle_seconds", None) is not None,
+        getattr(args, "post_write_log_file", None) is not None,
+    )):
+        raise CliError(
+            "Experimental post-write customization is install-only and not supported for upgrades.",
+            exit_code=ExitCode.INVALID_INPUT,
+            category="post_write_upgrade_unsupported",
+        )
+
+
 def _plan_operation(
     args: argparse.Namespace,
     sink: EventSink,
     *,
     operation: OperationKind,
 ) -> CommandResult:
+    if operation == OperationKind.UPGRADE:
+        _reject_upgrade_post_write_options(args)
+    post_write = _post_write_options(args) if operation == OperationKind.INSTALL else PostWriteOptions()
+    if post_write.enabled:
+        _warn_experimental(sink)
     controller = _build_controller(args.remote_index_url)
     try:
         image_path = _prepare_source(controller, args, sink, for_execution=False)
@@ -649,6 +724,8 @@ def _plan_operation(
                 category="target_resolution_failed",
             ) from error
         payload = plan.to_dict()
+        if post_write.enabled:
+            payload["post_write_preview"] = _post_write_preview(post_write, image_path)
         for warning in plan.warnings:
             sink.warning(warning)
         sink.resolution(
@@ -671,6 +748,11 @@ def _plan_operation(
             f"would write: {'yes' if plan.would_write else 'no'}",
         ]
         human.extend(f"warning: {warning}" for warning in plan.warnings)
+        if post_write.enabled:
+            preview = cast(dict[str, object], payload["post_write_preview"])
+            human.append("experimental post-write customizations: enabled")
+            human.append(f"resolved boot order: {preview['resolved_order']}")
+            human.append(f"ignored boot entries: {preview['ignored_entries']}")
         human.extend(f"blocking error: {error}" for error in plan.blocking_errors)
         return CommandResult(payload={"plan": payload}, human_text="\n".join(human), exit_code=exit_code)
     finally:
@@ -690,10 +772,27 @@ def _post_write_options(args: argparse.Namespace) -> PostWriteOptions:
             exit_code=ExitCode.INVALID_INPUT,
             category="post_write_option_requires_enable",
         )
+    seen: set[str] = set()
+    for raw in entries:
+        entry = raw.strip()
+        if not entry:
+            raise CliError("Boot-order entry must not be empty.", exit_code=ExitCode.INVALID_INPUT, category="boot_order_entry_empty")
+        if entry in seen:
+            raise CliError(f"Duplicate boot-order entry: {entry}", exit_code=ExitCode.INVALID_INPUT, category="boot_order_entry_duplicate")
+        seen.add(entry)
+    entries = [entry.strip() for entry in entries]
+    settle_option = getattr(args, "post_write_settle_seconds", None)
+    settle_seconds = 2.0 if settle_option is None else float(settle_option)
+    if not 0.0 <= settle_seconds <= 60.0:
+        raise CliError(
+            "Post-write settle delay must be finite and between 0 and 60 seconds.",
+            exit_code=ExitCode.INVALID_INPUT,
+            category="post_write_settle_invalid",
+        )
     return PostWriteOptions(
         enabled=enabled,
         sync_device=not bool(getattr(args, "disable_post_write_sync", False)),
-        settle_seconds=max(float(getattr(args, "post_write_settle_seconds", 2.0)), 0.0),
+        settle_seconds=settle_seconds,
         log_file_path=str(getattr(args, "post_write_log_file", "") or ""),
         boot_loader_order=BootLoaderOrderOptions(enabled=bool(entries), entries=entries),
     )
@@ -701,6 +800,19 @@ def _post_write_options(args: argparse.Namespace) -> PostWriteOptions:
 
 def _progress_callback(sink: EventSink) -> Callable[[str], None]:
     def emit(message: str) -> None:
+        if message.startswith("Running optional post-write customizations for "):
+            sink.post_write_step("start", message)
+        elif message == "No supported boot-loader config files found on boot partition.":
+            sink.post_write_step("skipped", message, reason="no_supported_boot_loader_files")
+        elif message.startswith("Reordered "):
+            sink.post_write_step("changed", message, file=message.removeprefix("Reordered ").split(";", 1)[0])
+        elif message.startswith("Skipped "):
+            path_and_reason = message.removeprefix("Skipped ").split(": ", 1)
+            sink.post_write_step("skipped", message, file=path_and_reason[0], reason=path_and_reason[1] if len(path_and_reason) == 2 else "unspecified")
+        elif message.startswith("No boot-loader order change needed for "):
+            sink.post_write_step("no_change", message, file=message.removeprefix("No boot-loader order change needed for ").removesuffix("."))
+        elif message == "Optional post-write customizations completed.":
+            sink.post_write_step("complete", message)
         fields: dict[str, object] = {}
         written = parse_dd_bytes(message)
         if written is not None:
@@ -746,7 +858,11 @@ def _execute_operation(
     *,
     operation: OperationKind,
 ) -> CommandResult:
+    if operation == OperationKind.UPGRADE:
+        _reject_upgrade_post_write_options(args)
     post_write = _post_write_options(args) if operation == OperationKind.INSTALL else PostWriteOptions()
+    if post_write.enabled:
+        _warn_experimental(sink)
     controller = _build_controller(args.remote_index_url, post_write)
     try:
         image_path = _prepare_source(controller, args, sink, for_execution=True)
@@ -766,6 +882,7 @@ def _execute_operation(
                 category="safety_refusal" if _blocked_plan_exit(plan.to_dict()) == ExitCode.SAFETY_REFUSAL else "invalid_operation_plan",
                 details={"plan": plan.to_dict()},
             )
+        preview = _post_write_preview(post_write, image_path) if post_write.enabled else None
         for warning in plan.warnings:
             sink.warning(warning)
         token = _require_destructive_acknowledgement(args, plan.target)
@@ -804,6 +921,14 @@ def _execute_operation(
                 exit_code=ExitCode.SAFETY_REFUSAL,
                 category="safety_refusal",
             ) from error
+        except PostWriteFailure as error:
+            sink.post_write_step("failed", str(error))
+            raise CliError(
+                f"Image write completed but post-write customization failed: {error}",
+                exit_code=ExitCode.POST_WRITE_FAILED,
+                category="post_write_failed_after_write",
+                details={"image_written": True, "post_write_customizations": "failed"},
+            ) from error
         except RuntimeError as error:
             if "previously verified downloaded image" in str(error).casefold() or "integrity verification failed" in str(error).casefold():
                 raise CliError(
@@ -827,6 +952,8 @@ def _execute_operation(
             "confirmation_token": token,
             "post_write_customizations": post_write.enabled if operation == OperationKind.INSTALL else False,
         }
+        if preview is not None:
+            result["post_write_preview"] = preview
         return CommandResult(
             payload={"operation_result": result},
             human_text=(
@@ -904,10 +1031,10 @@ def _add_install_post_write_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--post-write-settle-seconds",
         type=float,
-        default=2.0,
-        help="Settle delay used by optional post-write customizations (default: 2.0).",
+        default=None,
+        help="Settle delay used by optional post-write customizations (default: 2.0; 0-60).",
     )
-    parser.add_argument("--post-write-log-file", default="", help="Legacy post-write hook audit-log file.")
+    parser.add_argument("--post-write-log-file", default=None, help="Legacy post-write hook audit-log file.")
     parser.add_argument(
         "--boot-order-entry",
         action="append",
@@ -992,6 +1119,9 @@ def build_cli_parser() -> argparse.ArgumentParser:
         operation = plan_sub.add_parser(name, help=f"Plan a {name} operation.")
         _add_target_argument(operation)
         _add_source_arguments(operation, destructive=False)
+        # Parse install-only flags on plan upgrade as well, to return the same
+        # structured refusal category instead of argparse's generic exit 2.
+        _add_install_post_write_arguments(operation)
         operation.set_defaults(func=handle_plan)
 
     install = subcommands.add_parser("install", help="Whole-device install/reinstall using controller safety revalidation.")
@@ -1005,6 +1135,7 @@ def build_cli_parser() -> argparse.ArgumentParser:
     _add_target_argument(upgrade)
     _add_source_arguments(upgrade, destructive=True)
     _add_confirmation_arguments(upgrade)
+    _add_install_post_write_arguments(upgrade)
     upgrade.set_defaults(func=handle_upgrade)
     return parser
 
@@ -1014,6 +1145,26 @@ def _normalize_global_options(argv: Sequence[str] | None) -> list[str] | None:
     if argv is None:
         return None
     values = list(argv)
+    # Experimental flags may precede the operation just like global flags;
+    # move them after the command so argparse can give a categorized refusal.
+    operation_index = next((index for index, value in enumerate(values) if value in {"install", "upgrade"}), None)
+    if operation_index is not None:
+        flags_with_value = {"--boot-order-entry", "--post-write-settle-seconds", "--post-write-log-file"}
+        flags_without_value = {"--enable-post-write-customizations", "--disable-post-write-sync"}
+        prefix: list[str] = []
+        moved: list[str] = []
+        index = 0
+        while index < operation_index:
+            option = values[index].split("=", 1)[0]
+            if option in flags_without_value or (option in flags_with_value and "=" in values[index]):
+                moved.append(values[index])
+            elif option in flags_with_value and index + 1 < operation_index:
+                moved.extend(values[index : index + 2])
+                index += 1
+            else:
+                prefix.append(values[index])
+            index += 1
+        values = prefix + values[operation_index:] + moved
     globals_: list[str] = []
     remaining: list[str] = []
     index = 0

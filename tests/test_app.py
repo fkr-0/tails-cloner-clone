@@ -717,6 +717,25 @@ class AppWindowClassTests(unittest.TestCase):
 
 
 class GuiSafetyAndUxRegressionTests(unittest.TestCase):
+    def test_boot_parse_ignores_result_after_source_change(self) -> None:
+        app = TailsClonerApp.__new__(TailsClonerApp)
+        app._boot_parse_job_id = 1
+        app.image_path_var = _FakeStringVar("new.img")
+        app.action_mode_var = _FakeStringVar("install")
+        app.experimental_enabled_var = mock.Mock(get=lambda: True)
+        app.controller = type("Controller", (), {"state": type("State", (), {"source_mode": SourceMode.LOCAL})()})()
+        app.boot_loader_status_var = _FakeStringVar("current")
+        app._set_boot_order_entries = mock.Mock()
+        app._apply_parsed_boot_order_entries(1, "old.img", ["Old entry"])
+        app._set_boot_order_entries.assert_not_called()
+
+    def test_boot_parse_error_is_reported_without_crashing_worker(self) -> None:
+        app = TailsClonerApp.__new__(TailsClonerApp)
+        app._ui_events = SimpleQueue()
+        with mock.patch("tails_cloner.app.discover_boot_loader_entries", side_effect=ValueError("bad image")):
+            app._parse_boot_order_entries_task(2, "bad.img")
+        self.assertFalse(app._ui_events.empty())
+
     def test_escape_key_does_not_quit_the_application(self) -> None:
         build_source = inspect.getsource(TailsClonerApp._build_ui)
 
@@ -751,7 +770,7 @@ class GuiSafetyAndUxRegressionTests(unittest.TestCase):
         text = f"{'cd' * 32}  other.img\n{digest}  tails-amd64-7.0.img\n"
 
         applied: list[tuple[str, str]] = []
-        app._apply_suggested_checksum = lambda url, checksum: applied.append((url, checksum))  # type: ignore[method-assign]
+        app._apply_suggested_checksum = lambda url, checksum: applied.append((url, checksum))
         with (
             mock.patch("tails_cloner.app.should_use_torify", return_value=True),
             mock.patch("tails_cloner.app.fetch_checksum_text", return_value=text) as fetch,
@@ -798,8 +817,8 @@ class GuiSafetyAndUxRegressionTests(unittest.TestCase):
                 self.mode = str(kwargs.get("mode", self.mode))
                 calls.append(("configure", kwargs))
 
-        app.progress_bar = _Bar()  # type: ignore[assignment]
-        app.progress_label = _FakeLabel()  # type: ignore[assignment]
+        app.progress_bar = _Bar()
+        app.progress_label = _FakeLabel()
 
         app._set_progress_fraction(250, "250 bytes (250 B) copied, 1 s, 250 B/s")
 
@@ -811,7 +830,7 @@ class GuiSafetyAndUxRegressionTests(unittest.TestCase):
         app = TailsClonerApp.__new__(TailsClonerApp)
         app._write_total_bytes = 0
         app._write_in_progress = True
-        app.progress_bar = None  # type: ignore[assignment]  # would raise if touched
+        app.progress_bar = None  # would raise if touched
 
         app._set_progress_fraction(250, "250 bytes copied")
 

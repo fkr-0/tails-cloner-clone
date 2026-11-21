@@ -36,6 +36,38 @@ def test_json_mode_emits_one_deterministic_completion_envelope() -> None:
     assert stderr.getvalue() == ""
 
 
+def test_post_write_steps_are_additive_to_v1_and_ordered() -> None:
+    stdout = StringIO()
+    sink = EventSink(command="install", output_mode=OutputMode.JSONL, stdout=stdout, stderr=StringIO())
+    sink.start()
+    sink.warning("Experimental feature", category="experimental_post_write")
+    sink.write_boundary("acknowledged")
+    sink.post_write_step("start", "processing")
+    sink.post_write_step("skipped", "unsupported file", file="EFI/grub.cfg", reason="ambiguous")
+    sink.post_write_step("complete", "completed")
+    sink.complete(CommandResult(payload={"operation_result": {"executed": True}}))
+    events = [json.loads(line) for line in stdout.getvalue().splitlines()]
+    assert [event["kind"] for event in events] == [
+        "start", "warning", "write_boundary", "post_write_step", "post_write_step",
+        "post_write_step", "completion",
+    ]
+    assert [event["sequence"] for event in events] == list(range(1, 8))
+    assert events[4]["reason"] == "ambiguous"
+    assert events[-1]["result"]["operation_result"]["executed"] is True
+
+
+def test_documented_experimental_categories_exist_in_cli_code() -> None:
+    from tails_cloner import cli
+
+    document = (Path(__file__).resolve().parents[1] / "docs/cli-command-spec.md").read_text()
+    categories = document.split("<!-- experimental-categories-start -->", 1)[1].split(
+        "<!-- experimental-categories-end -->", 1
+    )[0]
+    source = Path(cli.__file__).read_text()
+    for category in (part.strip() for part in categories.splitlines() if part.strip()):
+        assert f'category="{category}"' in source
+
+
 def test_jsonl_mode_streams_stable_event_kinds_and_bounded_messages() -> None:
     stdout = StringIO()
     sink = EventSink(

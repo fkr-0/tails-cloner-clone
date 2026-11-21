@@ -3,6 +3,7 @@ import subprocess
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from tails_cloner.devices import (
     MIN_INSTALLATION_SIZE_GB,
@@ -14,6 +15,68 @@ from tails_cloner.devices import (
 
 
 class DeviceParsingTests(unittest.TestCase):
+    def test_unresolved_running_live_source_protects_every_candidate(self) -> None:
+        payload = {"blockdevices": [{"path": "/dev/sdb", "type": "disk", "size": str(32 * 1024**3), "rm": True}]}
+        device = parse_lsblk_json(payload, live_source_ambiguous=True)[0]
+        self.assertFalse(device.selectable)
+
+    def test_service_refuses_all_when_running_medium_was_removed(self) -> None:
+        payload = {"blockdevices": [{"path": "/dev/sdc", "type": "disk", "size": str(32 * 1024**3), "rm": True}]}
+
+        def run(command, **_kwargs):
+            output = json.dumps(payload) if command[0] == "lsblk" else "overlay\n"
+            return subprocess.CompletedProcess(command, 0, stdout=output, stderr="")
+
+        with (
+            patch("tails_cloner.devices.is_running_tails", return_value=True),
+            patch("tails_cloner.devices.has_running_tails_boot_signals", return_value=True),
+            patch("tails_cloner.devices.get_running_tails_device", return_value="/dev/sdb1"),
+            patch("tails_cloner.devices.find_stable_device_path", return_value=""),
+        ):
+            device = DeviceService(run=run).list_devices()[0]
+        self.assertFalse(device.selectable)
+
+    def test_service_refuses_all_when_live_medium_is_loop_backed(self) -> None:
+        payload = {"blockdevices": [{"path": "/dev/sdc", "type": "disk", "size": str(32 * 1024**3), "rm": True}]}
+
+        def run(command, **_kwargs):
+            output = json.dumps(payload) if command[0] == "lsblk" else "overlay\n"
+            return subprocess.CompletedProcess(command, 0, stdout=output, stderr="")
+
+        with (
+            patch("tails_cloner.devices.is_running_tails", return_value=True),
+            patch("tails_cloner.devices.has_running_tails_boot_signals", return_value=True),
+            patch("tails_cloner.devices.get_running_tails_device", return_value="/dev/loop0"),
+            patch("tails_cloner.devices.find_stable_device_path", return_value=""),
+        ):
+            device = DeviceService(run=run).list_devices()[0]
+        self.assertFalse(device.selectable)
+        self.assertTrue(device.is_current_system_device)
+
+    def test_service_refuses_targets_when_tails_boot_signals_disagree_with_mount(self) -> None:
+        payload = {"blockdevices": [{"path": "/dev/sdb", "type": "disk", "size": str(32 * 1024**3), "rm": True}]}
+
+        def run(command, **_kwargs):
+            output = json.dumps(payload) if command[0] == "lsblk" else "overlay\n"
+            return subprocess.CompletedProcess(command, 0, stdout=output, stderr="")
+
+        with (
+            patch("tails_cloner.devices.is_running_tails", return_value=False),
+            patch("tails_cloner.devices.has_running_tails_boot_signals", return_value=True),
+            patch("tails_cloner.devices.find_stable_device_path", return_value=""),
+        ):
+            device = DeviceService(run=run).list_devices()[0]
+        self.assertFalse(device.selectable)
+
+    def test_resolved_running_live_source_protects_alias_disk_without_mountpoints(self) -> None:
+        payload = {"blockdevices": [
+            {"path": "/dev/sdb", "type": "disk", "size": str(32 * 1024**3), "rm": True},
+            {"path": "/dev/sdc", "type": "disk", "size": str(32 * 1024**3), "rm": True},
+        ]}
+        devices = parse_lsblk_json(payload, running_live_source="/dev/sdb1")
+        self.assertFalse(devices[0].selectable)
+        self.assertTrue(devices[1].selectable)
+
     def test_stable_device_path_prefers_wwn_alias_and_ignores_partition_aliases(self) -> None:
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

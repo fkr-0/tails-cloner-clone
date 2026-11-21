@@ -21,6 +21,11 @@ def get_parent_disk_path(device_path: str) -> str:
     if not device_path.startswith("/dev/"):
         return device_path
 
+    # /dev/disk/by-{id,uuid,path} aliases are common in live-media selection.
+    # Resolve them *before* stripping partition numbers, otherwise an alias
+    # for the same physical medium can bypass a source/target comparison.
+    device_path = os.path.realpath(device_path)
+
     nvme_like = re.fullmatch(r"(/dev/(?:nvme\d+n\d+|mmcblk\d+|loop\d+|md\d+))p\d+", device_path)
     if nvme_like:
         return nvme_like.group(1)
@@ -42,6 +47,23 @@ def is_running_tails() -> bool:
         if os.path.exists(version_file):
             return True
     return False
+
+
+def has_running_tails_boot_signals() -> bool:
+    """Spot a Tails live boot even if its medium mount is missing or moved.
+
+    This is a *write protection hint*, not proof that a cloneable source exists.
+    Requiring both signals avoids interpreting arbitrary Debian live systems as
+    Tails. Unknown layouts must remain unselectable until identified.
+    """
+    try:
+        cmdline = Path("/proc/cmdline").read_text(encoding="utf-8")
+        os_release = Path("/etc/os-release").read_text(encoding="utf-8")
+    except OSError:
+        return False
+    boot_live = bool(re.search(r"(?:^|\s)boot=live(?:\s|$)", cmdline))
+    tails_product = bool(re.search(r'(?m)^(?:ID|NAME|PRETTY_NAME)=["\']?tails(?:\s|["\']|$)', os_release, re.I))
+    return boot_live and tails_product
 
 
 def get_running_tails_device() -> str | None:

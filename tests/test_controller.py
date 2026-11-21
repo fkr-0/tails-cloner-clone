@@ -4,9 +4,12 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest import mock
 
+from tails_cloner import controller as controller_module
 from tails_cloner.controller import ApplicationController
 from tails_cloner.models import AppState, BlockDevice, SourceMode, VersionAssets
+from tails_cloner.verification import verify_sha256
 
 
 def wait_for(description: str, condition, timeout: float = 2.0, interval: float = 0.01):
@@ -707,17 +710,12 @@ class CallOrderTests(unittest.TestCase):
             controller.discover_devices()
             events.clear()
 
-            import tails_cloner.controller as controller_module
-
-            real_verify = controller_module.verify_sha256
-
             def recording_verify(*args, **kwargs):
                 events.append("hash")
-                return real_verify(*args, **kwargs)
+                return verify_sha256(*args, **kwargs)
 
-            controller_module.verify_sha256 = recording_verify
-            self.addCleanup(setattr, controller_module, "verify_sha256", real_verify)
-            controller.clone_selected_image(str(image), "/dev/sdb")
+            with mock.patch.object(controller_module, "verify_sha256", side_effect=recording_verify):
+                controller.clone_selected_image(str(image), "/dev/sdb")
 
         # The slow hash must come first so no long operation sits between the last
         # hot-swap identity check and the write.
@@ -727,7 +725,8 @@ class CallOrderTests(unittest.TestCase):
         import subprocess
 
         class FailingCloneService(FakeCloneService):
-            def upgrade_image(self, **_kwargs):
+            def upgrade_image(self, image_path: str, device_path: str, progress_callback=None):
+                _ = (image_path, device_path, progress_callback)
                 raise subprocess.CalledProcessError(
                     32, ["pkexec", "umount", "--", "/media/x"], stderr="umount: /media/x: target is busy.\n"
                 )
@@ -742,8 +741,9 @@ class CallOrderTests(unittest.TestCase):
 
     def test_missing_image_file_is_not_misreported_as_missing_program(self) -> None:
         class MissingImageService(FakeCloneService):
-            def upgrade_image(self, **kwargs):
-                raise FileNotFoundError(kwargs["image_path"])
+            def upgrade_image(self, image_path: str, device_path: str, progress_callback=None):
+                _ = (device_path, progress_callback)
+                raise FileNotFoundError(image_path)
 
         controller = self._controller(MissingImageService(), FakeDeviceService())
         controller.discover_devices()
