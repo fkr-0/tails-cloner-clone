@@ -32,7 +32,7 @@ def test_appimage_packages_pinned_tails_signing_key() -> None:
 def test_package_versions_are_converged() -> None:
     metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
-    assert metadata["project"]["version"] == __version__ == "0.5.5"
+    assert metadata["project"]["version"] == __version__ == "0.5.6"
 
 
 def test_appimage_build_uses_local_virtualenv_for_pyinstaller() -> None:

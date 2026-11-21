@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+## v0.5.6 - 2026-11-21 (local integration candidate; not tagged)
+
+### Running-System and Target Safety
+
+- Resolve `/dev/disk/by-id`, by-path and by-UUID aliases to the underlying disk before comparing source/target identities. Detect Tails live-boot signals separately from mounted media, and block write-target selection when the live source disk is ambiguous or no longer present.
+- Improve regression coverage for removed/re-enumerated live media and source/target alias handling. This fail-closed detection is not a substitute for a real Tails boot test.
+
+### Experimental Boot-Order Customization (Install Only)
+
+- Replace heuristic IMG byte scanning with bounded, read-only ISO9660/directory boot-configuration discovery and source-path provenance. Opaque FAT IMG sources fail closed until an independent structural parser is available.
+- Keep GRUB/Syslinux rewrites within proven-safe menu blocks: reject duplicate/dynamic titles, scoped or sourced GRUB entries, unknown/global Syslinux directives, unsupported encoding, and ambiguous structure. Preserve comments and unrelated bytes.
+- Use non-symlink regular-file checks, collision-safe backups, atomic same-directory replacement with data syncing, verification, and rollback on errors. Preserve uniform CRLF files; report unsupported configurations without rewriting them.
+- Harden the optional post-write lifecycle with VFAT/mount-policy checks, bounded settle, explicit audit and structured `post_write_step` events. CLI exit 10 distinguishes a completed image write from failed customization; it does not imply rollback of the image.
+- Extend install planning with a read-only boot-order preview and explicit experimental warnings. Refuse **all** install-only post-write switches on `upgrade` and `plan upgrade` with `post_write_upgrade_unsupported`; reject non-finite/out-of-range settle delays before accessing devices.
+- Guard GUI background parsing against stale results, disable experimental controls for upgrades, add keyboard ordering controls and a detailed destructive confirmation warning.
+
+### Offline Qualification and Limits
+
+- Add synthetic ISO/discovery, multi-file rollback, event-order, CLI refusal, live-medium and GUI regressions; add an offline directory-copy boot-order evidence script and operator runbook.
+- No real-device write, real Tails boot, visible boot-menu order, or QEMU boot-compatibility proof was performed for this candidate. Independent file-apply and post-write target-identity reviews remain required before release tagging. Tor-transport lane changes are still under a separate integration claim and are **not** part of this candidate.
+
 ## v0.5.5 - 2026-10-12
 
 ### Review Fixes: Safety and Reliability

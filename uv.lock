@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.11"
 
 [[package]]
@@ -483,7 +483,7 @@ wheels = [
 
 [[package]]
 name = "tails-cloner-clone"
-version = "0.5.3"
+version = "0.5.6"
 source = { editable = "." }
 
 [package.optional-dependencies]
